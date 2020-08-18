@@ -3,7 +3,11 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
-from .misc import rotation_matrix_3D
+from recipes.transformations.rotation import rotation_matrix_3d
+
+
+# class MagneticMultipole(object)
+
 
 # ****************************************************************************************************
 class MagneticDipole(object):
@@ -12,28 +16,28 @@ class MagneticDipole(object):
     # TODO plot2D
     # TODO tilted dipole!
 
-    def __init__(self, center, inclination):
+    def __init__(self, center=(0, 0, 0), inclination=0):  # azimuth ????
         self.center = center
         self.phi = np.radians(inclination)
 
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def fieldlines(self, nshells=3, naz=5, res=100, scale=1., bounding_box=3, rmin=1.):
-        '''Compute the field lines for a dipole magnetic field'''
+    def fieldlines(self, nshells=3, naz=5, res=100, scale=1., bounding_box=3,
+                   rmin=1.):
+        """Compute the field lines for a dipole magnetic field"""
 
         Re = 1
         L = np.r_['-1,3,0', range(1, nshells + 1)]  # as 3D array
 
         theta = np.linspace(0, np.pi, res)
-        sin_theta = np.sin(theta)
-        r = Re * sin_theta ** 2  # radial profile of B-field lines
-        r_sin_theta = r * sin_theta
+        sinθ = np.sin(theta)
+        r = Re * sinθ * sinθ  # radial profile of B-field lines
+        rsinθ = r * sinθ
 
-        phi = np.c_[np.linspace(0, 2 * np.pi, naz+1)[:-1]] # wraps at 2pi
+        phi = np.c_[np.linspace(0, 2 * np.pi, naz + 1)[:-1]]  # wraps at 2π
 
         # convert to Cartesian coordinates
         v = np.r_['-1,3,0',
-                  r_sin_theta * np.cos(phi),
-                  r_sin_theta * np.sin(phi),
+                  rsinθ * np.cos(phi),
+                  rsinθ * np.sin(phi),
                   r * np.cos(theta) * np.ones_like(phi)]
         v = v.reshape(-1, 3)
         fieldlines = L * v
@@ -44,7 +48,7 @@ class MagneticDipole(object):
         # tilt
         if self.phi != 0:
             # 3D rotation!
-            R = rotation_matrix_3D((0, 1, 0), np.radians(20))
+            R = rotation_matrix_3d((0, 1, 0), np.radians(20))
             fieldlines = np.tensordot(R, fieldlines, [0, -1]).transpose(1, 2, 0)
 
         # mask fieldlines inside WD
@@ -52,6 +56,9 @@ class MagneticDipole(object):
             l = np.linalg.norm(fieldlines.T, axis=0) <= rmin
             L = np.tile(l, (3, 1, 1)).T
             fieldlines = np.ma.masked_array(fieldlines, mask=L)
+
+        # shift to center
+        fieldlines += self.center.T
 
         bbox = bounding_box
         if bbox:
@@ -65,7 +72,6 @@ class MagneticDipole(object):
     def boxed(self, fieldlines, box):
         box = 3
 
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def plot3d(self, ax, nshells=3, naz=5, **kw):
         #
         # ax = kw.get('ax', None):
@@ -73,6 +79,5 @@ class MagneticDipole(object):
         segments = self.fieldlines(nshells, naz)
         ax.add_collection3d(Line3DCollection(segments, **kw))
         ax.auto_scale_xyz(*segments.T)
-
 
         # dipole = MagneticDipole()

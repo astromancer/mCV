@@ -1,11 +1,14 @@
 *.idea
+
 *.kate-swp
 *~
+*.swp
+
+
 *.bak
-/__pycache__
+__pycache__
+
 
 # dev
 dev
-test.py
-*.mp4
-ani.py
+animation
