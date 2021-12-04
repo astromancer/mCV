@@ -1,6 +1,6 @@
 import numpy as np
 
-from recipes.transformations.rotation import sph2cart
+from recipes.transforms import sph2cart
 from astropy import units as u
 from astropy.constants import M_sun, R_sun
 
@@ -22,11 +22,12 @@ def Chandrasekhar(M):
     http://adsabs.harvard.edu/abs/1939C&T....55..412C
 
     """
-    pass
+    raise NotImplementedError
 
 
 def Nauenberg(M):
     """
+    The Nauenberg Mass-Radius relation for White Dwarfs.
 
     Parameters
     ----------
@@ -46,16 +47,15 @@ def Nauenberg(M):
     mu = 2  # the average molecular weight per electron of the star.
     # He-4 C-12 and O-16 which predominantly compose white dwarf all have atomic
     # number equal to half their atomic weight, one should take μe equal to 2
-    M3 = 5.816 / (mu * mu)
-    mm3 = (M / M3) ** (1. / 3)
-    R = (0.0225 / mu) * np.sqrt(1. - mm3 ** 4) / mm3
-    return R
+    M3 = 5.816 / mu ** 2
+    mm3 = np.cbrt(M / M3)
+    return (0.0225 / mu) * np.sqrt(1. - mm3 ** 4) / mm3
 
 
 def NauenbergStd(M, Mstd):
     # linear propagation of uncertainty
     mu = 2
-    M3 = 5.816 / (mu * mu)
+    M3 = 5.816 / mu ** 2
     k = 0.0225 / mu
     mcb = np.cbrt(M / M3)
     return abs(k / 18 / M3 * (1 - 2 / mcb) / np.sqrt(1 - mcb) / mcb ** 5 * Mstd)
@@ -66,7 +66,7 @@ def carvalho_M(r):
     np.polyval(c, r)
 
 
-class WhiteDwarf(object):
+class WhiteDwarf:
     def __init__(self, Msol, centre=(0, 0, 0)):
         """M: WD mass in units of (solar mass)"""
         #
@@ -95,14 +95,8 @@ class WhiteDwarf(object):
                      self.R * scale, **props)
         ax.add_patch(cir)
 
-    def plot_wireframe(self, ax, res=25, scale=1, **kw):
-        return \
-            ax.plot_wireframe(
-                    *self.get_data(res, scale),
-                    **kw)
+    def plot_wireframe(self, ax, res=25, scale=1, **kws):
+        return ax.plot_wireframe(*self.get_data(res, scale), **kws)
 
-    def plot_surface(self, ax, res=25, scale=1, **kw):
-        return \
-            ax.plot_surface(
-                    *self.get_data(res, scale),
-                    **kw)
+    def plot_surface(self, ax, res=25, scale=1, **kws):
+        return ax.plot_surface(*self.get_data(res, scale), **kws)

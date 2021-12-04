@@ -95,7 +95,7 @@ class BallisticStream(RochePotential):
 class FakeMagnetoBallisticStream(BallisticStream):
     def trajectory(self, npart=100, nt=101, tmax=0.75, rv=None, B_thresh = 1e3):
 
-        from recipes.transformations.rotation import sph2cart
+        from recipes.transforms import sph2cart
 
         xyz = self.l1_spray(npart, nt, tmax, rv)
 
