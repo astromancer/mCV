@@ -4,12 +4,6 @@ Methods for solving and plotting Roche lobe surfaces in 2d and 3d.
 
 # TODO: note the basic equations + references here
 
-# Both stars treated as point masses.
-
-# TODO: I'm sure others have published more recent work on solving these
-# equations.  Do lit review and harvest best methods
-# TODO: improve documentation
-
 
 # todo: Seidov 20xx
 # http://iopscience.iop.org.ezproxy.uct.ac.za/article/10.1086/381315/pdf
@@ -20,50 +14,89 @@ Methods for solving and plotting Roche lobe surfaces in 2d and 3d.
 # std
 import inspect
 import numbers
+import textwrap as txw
+import functools as ftl
 from collections import namedtuple
 
 # third-party
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import brentq
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from astropy import units as u
 from astropy.constants import G
 from astropy.utils import lazyproperty
+from astropy.units import UnitTypeError
 from astropy.units.quantity import Quantity
+from astropy.units.physical import PhysicalType
 from astropy.coordinates import CartesianRepresentation
 
 # local
+from recipes.array import fold
 from recipes import pprint as pp
+from recipes.dicts import AttrReadItem
 from recipes.decorators import Decorator
 from recipes.logging import LoggingMixin
 from recipes.misc import duplicate_if_scalar
 from recipes.transforms import pol2cart, rotation_matrix_2d
 
 
+# Module constants
+# ---------------------------------------------------------------------------- #
 π = np.pi
 _4π2 = 4 * π * π
 
 Mo = u.M_sun
 Ro = u.R_sun
-
-# Verify units
-verify_mass_unit = u.quantity_input(mass=['mass', 'dimensionless'])
+# ---------------------------------------------------------------------------- #
 
 # Default units for orbital Parameters
 PARAM_DEFAULT_UNITS = dict(m=Mo, m1=Mo, m2=Mo, a=u.AU, p=u.hour)
+PARAM_PHYSICAL_TYPE = dict(m='mass', m1='mass', m2='mass',
+                           a='length',
+                           P='time')
 
 # Plotting defaults
-WIREFRAME_DEFAULTS = dict(color='c', lw=0.75, alpha=0.5)
-LAGRANGE_3D_DEFAULTS = dict(color='darkgreen', marker='o', ms=5, ls='none',)
+ARTIST_PROPS_2D = AttrReadItem(
+    lagrange=dict(color='m', marker='.', ls='none'),
+    accretor=dict(label='Accretor', color='g'),
+    donor=dict(label='Donor', color='orangered'),
+    centres=dict(label='centres', color='g', marker='+', ls='none'),
+    CoM=dict(label='CoM', color='r', marker='x')
+)
+ARTIST_PROPS_2D['primary'] = ARTIST_PROPS_2D['accretor']
+ARTIST_PROPS_2D['secondary'] = ARTIST_PROPS_2D['donor']
+#
+ARTIST_PROPS_3D = AttrReadItem(
+    wireframe=dict(color='c', lw=0.75, alpha=0.5),
+    lagrange=dict(color='darkgreen', marker='o', ms=3, ls='none')
+)
 
 # Default altitudinal and azimuthal resolution for RocheLobes
 RESOLUTION = namedtuple('Resolution', ('alt', 'azim'))(50, 35)
 
 
+# Helper functions
+# ---------------------------------------------------------------------------- #
+
+# Verify units
+verify_mass_unit = u.quantity_input(mass=['mass', 'dimensionless'])
+
+
+def get_value(x):
+    """Get numeric value from quantity or return object itself."""
+    return getattr(x, 'value', x)
+
+
 class apply_default_units(Decorator):
+    """
+    Decorator for applying default units to function input parameters.
+    """
+
     def __init__(self, default_units=(), **kws):
+        self.sig = None     # placeholder
         for _, unit in dict(default_units, **kws).items():
-            assert isinstance(unit, (u.Unit, u.IrreducibleUnit))
+            assert isinstance(unit, u.UnitBase)
 
         self.default_units = default_units
 
@@ -80,21 +113,36 @@ class apply_default_units(Decorator):
         })
 
 
-def _check_units(mapping):
-    for obj, kind in mapping.items():
-        if isinstance(obj, Quantity):
-            assert obj.unit.physical_type == kind
+def _check_units(namespace, allowed_physical_types):
+    for name, kind in allowed_physical_types.items():
+        if name not in namespace:
+            continue
 
-# def semi_major_axis(p, m1, m2):
+        obj = namespace[name]
+        if isinstance(kind, (str, PhysicalType)):
+            kind = (kind, )
 
-#     params = dict(locals())
-#     nrs = {key: isinstance(val, numbers.Real) for key, val in params.items()}
-#     if all(nrs.values()):
-#         # Assume p [yr], m [Mo] -> a [AU]
-#         return np.cbrt(p * p * (m1 + m2)) * u.AU
+        if isinstance(obj, Quantity) and (obj.unit.physical_type not in kind):
+            raise UnitTypeError(f'Parameter {name} should have physical '
+                                f'type(s) {kind}, not '
+                                f'{obj.unit.physical_type}.')
 
-#     # at least one of the input parameters is Quantity
-#     return _semi_major_axis(**params)
+
+def _resolve_a_P(m, a, P):  # sourcery skip: de-morgan
+    if (a is None) and (P is None):
+        return 1, P
+
+    if P is None:
+        P = 2 * π * a ** (3/2) / (m * G)
+        return a, P
+
+    if a is None:
+        a = np.cbrt(m * G * P * P / _4π2)
+        return a, P
+
+    return a, P
+
+# ---------------------------------------------------------------------------- #
 
 
 @apply_default_units(p=u.yr, m1=Mo, m2=Mo)
@@ -117,7 +165,7 @@ def semi_major_axis(p, m1, m2) -> u.AU:
     return np.cbrt(p * p * G * (m1 + m2) / _4π2)
 
 
-def L1(q, xtol=1.e-9):
+def L1(q):  # xtol=1.e-9
     """
     Inner Lagrange points in units of binary separation a from origin CoM
 
@@ -260,6 +308,8 @@ def _lagrange_objective(x, mu):
             - mu * np.sign(x2) * x1sq
             - (1 - mu) * np.sign(x1) * x2sq)
 
+# ---------------------------------------------------------------------------- #
+
 
 class UnderSpecifiedParameters(Exception):
     """
@@ -274,12 +324,14 @@ class OverSpecifiedParameters(Exception):
     BinaryParameters.
     """
 
+# ---------------------------------------------------------------------------- #
+
 
 class BinaryParameters(LoggingMixin):
     """
     Parameterization helper for binary star systems. Serves as a interpretation
     layer that checks validity of parameters and units of input combinations
-    from the following set of parameters:
+    from the following set of parameters describing the binary orbit:
         q: float
             The mass ratio. The default definition is `q = m2 / m1`. This can be
             changed via the classmethod meth::q_is_m1_over_m2 prior to
@@ -299,10 +351,12 @@ class BinaryParameters(LoggingMixin):
     >>> BinaryParameters(q=1)
     In this case, the internal length scale is *1a*, where *a* is the orbital
     semi-major axis and the internal mass scale in *1m* where *m* is the total
-    mass of the binary. All results are returned in the centre of mass coordinates
-    with spatial scale a.
+    mass of the binary. All results are returned in the centre of mass
+    coordinates in units of a.
     Initializing with mass scale:
-    >>> BinaryParameters(q=0.5, m1=0.4) # default unit is assumed solar masses
+    >>> b = BinaryParameters(q=0.5, m1=0.4) # default unit is assumed solar masses
+    ... b.m2
+
 
     """
     # Mass ratio definition. This tells the class how to interpret init
@@ -349,9 +403,9 @@ class BinaryParameters(LoggingMixin):
     @staticmethod
     def _resolve_q_m(q, m, m1, m2, a, P):
         if q:
-            return q, m or 1
+            return q, (1 if m is None else m)
 
-        if m1 and m2:
+        if (m1 is not None) and (m2 is not None):
             if m and (m1 != (m1x := m - m2)):
                 raise OverSpecifiedParameters(
                     f'Conflicting parameters m1, m2, m. '
@@ -371,26 +425,18 @@ class BinaryParameters(LoggingMixin):
             m = _4π2 * (a ** 3) / (G * P * P)
 
         # q is None, m is not None
-        if m2:
+        if m2 is not None:
             m1 = m - m2
 
         return m / m1 - 1, m
 
-    def _resolve_a_P(self, a, P):
-        if a and P:
-            return a, P
+    def _resolve_a_P(self, a, P):  # sourcery skip: de-morgan
+        a, P = _resolve_a_P(self.m, a, P)
+        if hasattr(a, 'unit') and isinstance(a.unit, u.CompositeUnit):
+            a = a.to('AU')
+        return a, P
 
-        if a:
-            P = 2 * π * a ** (3/2) / (self.m * G)
-            return a, P
-
-        if P:
-            a = np.cbrt(self.m * G * P * P / _4π2)
-            return a, P
-
-        return 1, None
-
-    def __init__(self, q=None, m1=None, m2=None, m=None, a=None, P=None):
+    def __init__(self, q=None, m=None, m1=None, m2=None,  a=None, P=None):
         """
         Resolve the binary parameters from various input. The class
         can be initialized by specifying any minimal subset of the
@@ -420,18 +466,26 @@ class BinaryParameters(LoggingMixin):
         # if one of the masses are not given, we need either the orbital period
         # and the semi-major axis
 
-        _check_units({m: 'mass', m1: 'mass', m2: 'mass',
-                      a: 'length', P: 'time'})
+        _check_units(locals(), PARAM_PHYSICAL_TYPE)
         self._q, self._m = self._resolve_q_m(q, m, m1, m2, a, P)
-        # compute scale (semi-major axis)
+
+        # compute length scale (semi-major axis)
         self._a, self._P = self._resolve_a_P(a, P)
 
-    def pprint(self):
+    def __repr__(self):
+        return f'{self.__class__.__name__}(q={self.q:.3f})'
+
+    def __str__(self):
+        info = (f'{p} = {v}' for p in 'qmP' if (v := getattr(self, p)))
+        return f'{self.__class__.__name__}({", ".join(info)})'
+
+    def pformat(self):
+        """Format binary parameters as string."""
         a, P = self.a, self.P
         astr = (f"""{a.to('AU'):.5f}
-                    \t\t= {pp.nr(a.value)} {a.unit}
-                    \t\t= {a.to('lyr').value * u.a.to('s'):.5f} lightseconds
-                """.expandtabs()
+                \t\t   = {pp.nr(a.to('km').value)} km
+                \t\t   = {a.to('lyr').value * u.a.to('s'):.5f} lightseconds\
+                """.expandtabs().strip('\n')
                 if isinstance(a, Quantity) else
                 f'a = {a}')
 
@@ -439,12 +493,18 @@ class BinaryParameters(LoggingMixin):
                 if isinstance(P, Quantity) else
                 f'P  = {P}')
 
-        print(f'''\
-            Mass ratio {self.q_is.upper()}: q  = {self.q:.3f}
-            Semi-major axis:    a = {astr}
-
-            Orbital Period:       P  = {Pstr}
+        return txw.dedent(
+            f'''\
+            Binary Parameters:
+            Mass ratio ({self.q_is}) : q = {self.q:.3f}
+            Mass (m1+m2)       : m = {self.m.to(Mo).value} M⊙
+            Orbital Period     : P = {Pstr}
+            Semi-major axis    : a = {astr}\
             ''')
+
+    def pprint(self):
+        """Pretty print binary parameters"""
+        print(self.pformat())
 
     @property
     def q(self):
@@ -523,7 +583,7 @@ class BinaryParameters(LoggingMixin):
         Euclidean xyz position of the secondary wrt CoM coordinates in units of
         orbital semi-major axis *a*.
         """
-        return CartesianRepresentation(((self.mu - 1) * self.a, 0, 0))
+        return CartesianRepresentation((self.mu, 0, 0)) * self.a
 
     @property
     def r1(self):
@@ -531,7 +591,7 @@ class BinaryParameters(LoggingMixin):
         Euclidean xyz position of the primary wrt CoM coordinates in units of
         orbital semi-major axis *a*.
         """
-        return CartesianRepresentation((self.mu * self.a, 0, 0))
+        return CartesianRepresentation((self.mu - 1, 0, 0)) * self.a
 
     # self.omega        # Orbital angular velocity
 
@@ -559,16 +619,77 @@ class BinaryParameters(LoggingMixin):
         self._a, self._P = self._resolve_a_P(None, P)
         self.logger.debug('Period updated: P = {}', P)
 
+    @lazyproperty
+    def omega(self):
+        """Angular velocity"""
+        return np.sqrt(G * self.m / self.a ** 3)
+
+    # alias
+    Ω = omega
+
 
 class Axes3DHelper:
-    _axes = None
+    """Launch a figure with 3D axes on demand."""
 
-    @property
+    _cid = None
+
+    _subplot_kws = {'subplot_kw': dict(projection='3d')}
+
+    @lazyproperty
     def axes(self):
-        if self._axes is None:
-            _, ax = plt.subplots(subplot_kw=dict(projection='3d'))
-            self._axes = ax
-        return self._axes
+        return self.get_axes()
+
+    def get_axes(self):
+        fig, ax = plt.subplots(**self._subplot_kws)
+        self._cid = fig.canvas.mpl_connect('draw_event', self._on_first_draw)
+        return ax
+
+    def _on_first_draw(self, event):
+        # have to draw rectangle inset lines after first draw else they point
+        # to wrong locations on the edges of the lower axes
+        fix_axes_offset_text(self.axes)
+
+        # disconnect so this only runs once
+        self.axes.figure.canvas.mpl_disconnect(self._cid)
+
+
+def fix_axes_offset_text(ax):
+    # return
+    zax = ax.zaxis
+    offsetText = zax.offsetText
+    if offset := offsetText.get_text():
+        # mute offset text
+        offsetText.set_visible(False)
+
+        
+        # pp.METRIC_PREFIXES[zax.major.formatter.orderOfMagnitude]
+        # .k.unit.to_string()
+        # place with units in label
+        ax.set_zlabel(zax.label.get_text().replace(
+            r'\right]$',
+            fr'\times 10^{{{zax.major.formatter.orderOfMagnitude}}}\right]$'))
+
+
+# class Zbar:
+
+
+def zaxis_cmap(ax, zrange=(), nseg=50, cmap=None):
+    xyz = np.empty((3, nseg))
+    _, x1 = ax.get_xlim()
+    _, y1 = ax.get_ylim()
+    xyz[:2] = np.array((x1, y1), ndmin=2).T
+    z = xyz[2] = np.linspace(*(zrange or ax.get_zlim()), nseg)
+    l = Line3DCollection(fold.fold(xyz.T, 2, 1, pad=False),
+                         cmap=plt.get_cmap(cmap),
+                         array=xyz[2],
+                         zorder=10,
+                         lw=3)
+    ax.add_collection(l, autolim=False)
+    # print(xyz[[0, 1], 0])
+    l._z = z
+
+    ax.zaxis.line.set_visible(False)
+    return l
 
 
 class RochePotential(BinaryParameters, Axes3DHelper):
@@ -579,7 +700,13 @@ class RochePotential(BinaryParameters, Axes3DHelper):
 
     Distances and times are expressed internally in units of ``a = |r1| + |r2|'',
     the semi-major axis of the orbit, and ``P'' the orbital period.  The mass
-    ratio ``q = m1 / m2'' uniquely defines the Roche potential in this frame.
+    ratio ``q = m2 / m1'' uniquely defines the shape of the binary potential in
+    this frame. The mass, period, and semi-major axis are related through
+    Keplers 3rd law and together define the physical length scale.
+
+    Providing the
+    If they are
+
 
     """
 
@@ -588,11 +715,7 @@ class RochePotential(BinaryParameters, Axes3DHelper):
     # default tolerance on Lagrange point solutions
     xtol = 1.e-9
 
-    def _set_q(self, q):
-        super()._set_q(q)
-
-        # reset all the lazy properties that depend on q
-        del (self.l1, self.l2, self.l3, self.l4, self.l5, self.psi0)
+    # ------------------------------------------------------------------------ #
 
     def __call__(self, xyz):
         """
@@ -601,12 +724,33 @@ class RochePotential(BinaryParameters, Axes3DHelper):
         if isinstance(xyz, Quantity):
             xyz = (xyz / self.a)
 
-        return binary_potential_com(self._q, *np.array(xyz))
+        return self.k * binary_potential_com(self._q, *np.array(xyz))
 
     @lazyproperty
-    def psi0(self):
-        """Gravitational potential at L1"""
-        return self(self.l1, 0)
+    def k(self):
+        """
+        Scaling constant for potential.
+        """
+        if isinstance(self.m, Quantity) and isinstance(self.a, Quantity):
+            return (G * self.m / (2 * self.a)).to('J/kg')
+        return 1
+
+    @BinaryParameters.m.setter
+    def m(self, mass):
+        BinaryParameters.m.fset(self, mass)
+        del self.k
+
+    @BinaryParameters.a.setter
+    def a(self, a):
+        BinaryParameters.a.fset(self, a)
+        del self.k
+
+    def _set_q(self, q):
+        super()._set_q(q)
+
+        # reset all the lazy properties that depend on q
+        del (self.l1, self.l2, self.l3, self.l4, self.l5)
+        self._psix.cache_clear()  # pylint: disable=no-member
 
     # def centrifugal(self, x, y, z):  #
     #     """
@@ -629,21 +773,24 @@ class RochePotential(BinaryParameters, Axes3DHelper):
     #     mu = self.mu
     #     return (mu - 1.) / np.sqrt((x - mu) ** 2 + y * y + z * z)
 
-    def total(self, xyz):
-        """
-        Gravitational + centrifugal potential of binary system in rotating
-        coordinate frame (Cartesian)
-        Takes xyz grid in units of the semi-major axis (a = r1 + r2)
-        """
+    # def total(self, xyz):
+    #     """
+    #     Gravitational + centrifugal potential of binary system in rotating
+    #     coordinate frame (Cartesian)
+    #     Takes xyz grid in units of the semi-major axis (a = r1 + r2)
+    #     """
 
-        # x, y, z = map(np.asarray, (x, y, z))
-        # _phi = binary_potential_com(self._q, x, y, z)
-        # k = -G * self.m / (2 * self.a)
-        # k = -1
+    #     # x, y, z = map(np.asarray, (x, y, z))
+    #     # _phi = binary_potential_com(self._q, x, y, z)
+    #     # k = -G * self.m / (2 * self.a)
+    #     # k = -1
 
-        u = self(self._q, xyz)
+    #     u = self(self._q, xyz)
 
-        return
+    #     return
+
+    # Lagrange Points
+    # ------------------------------------------------------------------------ #
 
     def _solve_lagrange123(self, interval, xtol=xtol):
         """
@@ -658,22 +805,36 @@ class RochePotential(BinaryParameters, Axes3DHelper):
 
         """
         lx = brentq(_lagrange_objective, *interval, (self.mu,), xtol)
-        return CartesianRepresentation((lx * self.a, 0, 0))
+        return CartesianRepresentation((lx, 0, 0)) * self.a
 
     @lazyproperty
     def l1(self):
+        """
+        Inner Lagrange point (L1): The point where the gravitational
+        attraction of M2 and that of M1 are equal and opposite.
+        """
         δ = 1e-6
         interval = (self.mu - 1 + δ, self.mu - δ)
         return self._solve_lagrange123(interval)
 
     @lazyproperty
     def l2(self):
+        """
+        Outer Lagrange point (L2): The point in the co-rotating frame nearest
+        the less massive body, where the combined gravitational force of both
+        masses are equal and opposite the centrifugal force.
+        """
         δ = 1e-6
         interval = self.mu + δ, 2
         return self._solve_lagrange123(interval)
 
     @lazyproperty
     def l3(self):
+        """
+        Outer Lagrange point (L2): The point in the co-rotating frame nearest
+        the most massive body, where the combined gravitational force of both
+        masses are equal and opposite the centrifugal force.
+        """
         δ = 1e-6
         interval = -2, self.mu - 1 - δ
         return self._solve_lagrange123(interval)
@@ -682,7 +843,8 @@ class RochePotential(BinaryParameters, Axes3DHelper):
     def l4(self):
         # L4 has analytic solution
         return CartesianRepresentation(
-            np.array([self.mu - 0.5, np.sqrt(3) / 2, 0]) * self.a)
+            np.array([self.mu - 0.5, np.sqrt(3) / 2, 0]) * self.a
+        )
 
     @lazyproperty
     def l5(self):
@@ -691,6 +853,7 @@ class RochePotential(BinaryParameters, Axes3DHelper):
 
     @lazyproperty
     def lagrangians(self):
+        """Coordinates of all Lagrange points L1-L5"""
         return CartesianRepresentation(
             np.transpose([getattr(self, f'l{i}').xyz for i in range(1, 6)])
         )
@@ -702,25 +865,127 @@ class RochePotential(BinaryParameters, Axes3DHelper):
     L4 = l4
     L5 = l5
 
+    # Lagrange Potentials
+    # ------------------------------------------------------------------------ #
+    @property
+    def psi1(self):
+        """Gravitational potential at L1"""
+        return self._psix(1)
+
+    @property
+    def psi2(self):
+        """Gravitational potential at L2"""
+        return self._psix(2)
+
+    @property
+    def psi3(self):
+        """Gravitational potential at L3"""
+        return self._psix(3)
+
+    @property
+    def psi4(self):
+        """Gravitational potential at L4"""
+        return self._psix(4)
+
+    @property
+    def psi5(self):
+        """Gravitational potential at L5"""
+        return self._psix(5)
+
+    @ftl.lru_cache(5)
+    def _psix(self, i):
+        return self(getattr(self, f'l{i}').xyz)
+
+    # aliases
+    ψ1 = psi1
+    ψ2 = psi2
+    ψ3 = psi3
+    ψ4 = psi4
+    ψ5 = psi5
+
+    # Plotting
+    # ------------------------------------------------------------------------ #
+    _subplot_kws = dict(
+        figsize=(10, 7),
+        facecolor='none',
+        subplot_kw=dict(projection='3d',
+                        facecolor='none',
+                        computed_zorder=False,
+                        azim=-135),
+        gridspec_kw=dict(top=1.05,
+                         left=-0.125,
+                         right=1.08,
+                         bottom=-0.05)
+    )
+    _zbar = _contours = None
+
+    def get_axes(self):
+        ax = super().get_axes()
+        self._label_axes(ax)
+        ax.set_box_aspect((1, 1, 0.5))
+        return ax
+
+    def _label_axes(self, ax):
+        units = {}
+        for key, default_unit in dict(a='a', k=r'\frac{GM}{2a}').items():
+            val = getattr(self, key)
+            units[key] = (val.unit.to_string('latex').strip('$')
+                          if hasattr(val, 'unit') else
+                          default_unit)
+
+        kws = dict(usetex=True, labelpad=10)
+        ax.set_xlabel(fr'$x\ [{units["a"]}]$', **kws)
+        ax.set_ylabel(fr'$y\ [{units["a"]}]$', **kws)
+        ax.set_zlabel(fr'$\Psi(x,y,0)\ \left[{units["k"]}\right]$', **kws)
+
     def make_surface(self, res=100, extent=2, zmin=-12):
-        #
-        if isinstance(extent, numbers.Real):
-            x0, x1 = y0, y1 = np.array([-1, 1]) * extent
+        """
+        Create surface points for plotting.
+
+        Parameters
+        ----------
+        res : int, tuple, optional
+            Resolution, by default 100
+        extent : int, tuple, optional
+            Physical intervals for x and/or y, by default 2
+        zmin : int, optional
+            Lower bound for potential, by default -12. Values smaller than this
+            will be clipped
+
+        Examples
+        --------
+        >>>
+
+        Returns
+        -------
+        [type]
+            [description]
+        """
+        if hasattr(extent, 'unit'):
+            extent = extent / self.a
+
+        shape = np.shape(extent)
+        if shape in ((), (1,)):
+            (x0, x1) = (y0, y1) = np.array([-1, 1]) * extent
         elif np.shape(extent) == (2,):
-            x0, x1 = y0, y1 = extent
+            (x0, x1) = (y0, y1) = extent
         else:
             (x0, x1), (y0, y1) = extent
 
         # get potential surface data
-        ires, jres = duplicate_if_scalar(res)
-        Y, X = np.mgrid[x0:x1:complex(jres),
-                        y0:y1:complex(ires)]
-
+        ires, jres = np.array(duplicate_if_scalar(res)) * 1j
+        Y, X = np.mgrid[x0:x1:jres,
+                        y0:y1:ires]
         g = self([X, Y, np.zeros_like(X)])
-        g[g < zmin] = zmin
-        return X, Y, g
 
-    def plot_wireframe(self, ax=None, xyz=None, res=100, extent=2, every=4, **kws):
+        if not hasattr(zmin, 'unit'):
+            zmin = (zmin * self.k)
+
+        g[g < zmin] = zmin
+        return X * self.a, Y * self.a, g
+
+    def plot_wireframe(self, ax=None, xyz=None, res=100, extent=2, every=4,
+                       **kws):
 
         if xyz is None:
             xyz = self.make_surface(res, extent)
@@ -728,74 +993,139 @@ class RochePotential(BinaryParameters, Axes3DHelper):
         ax = ax or self.axes
         return ax.plot_wireframe(*xyz,
                                  **{'rstride': every, 'cstride': every,
-                                    **WIREFRAME_DEFAULTS,
+                                    **ARTIST_PROPS_3D.wireframe,
                                     **kws})
 
-    def plot_contour3d(self, ax=None, xyz=None, levels=(), cmap='jet', **kws):
+    def plot_contour3d(self, ax=None, xyz=None, levels=(), cmap='jet', zbar=True,
+                       **kws):
 
         if levels in ((), None):
-            # default contours #NOTE: these contours are not evenly spaced in z
-            ψ = ψ1, ψ2, *_, ψ5 = self(self.lagrangians.xyz)
-            levels = np.sort(np.unique(np.r_[
-                np.linspace(-12, ψ1, 25),
-                #np.linspace(roche.psi0, g.max(), 5),
-                ψ,
-                np.linspace(ψ2, ψ5, 5)[1:],
-                ψ5 * 1.005]
-            ))
+            levels = self._get_contour_levels()
 
         if xyz is None:
             xyz = self.make_surface()
-
+            
         cmap = plt.get_cmap(cmap)
         colors = cmap((levels - levels[0]) / levels.ptp())
-        cons = ax.contour3D(*xyz,
-                            levels=levels,
-                            colors=colors,
-                            **kws)
+        self._contours = ax.contour3D(*map(get_value, xyz),
+                                      levels=levels,
+                                      colors=colors,
+                                      **kws)
 
-        ax.set_zlim(levels.min(), levels.max())
-        return cons
+        zrange = levels.min(), levels.max()
+        ax.set_zlim(*zrange)
+        self._label_axes(ax)
 
-    # def get_contour_levels(self):
+        # Line along z-axis as a cmap
+        if zbar:
+            # ((z := xyz[-1]).min(), z.max())
+            self._zbar = zaxis_cmap(ax, zrange,
+                                    cmap=self._contours.get_cmap())
+            ax.figure.canvas.mpl_connect('motion_notify_event', self._on_rotate)
 
-    def plot3d(self, ax=None, wireframe=(), lagrangians=LAGRANGE_3D_DEFAULTS,
+        return self._contours, self._zbar
+
+    def _get_contour_levels(self, n01=25, n25=5, zmin=-12, zmax=None):
+        # default contours #NOTE: these contours are not evenly spaced in z
+        ψl = ψ1, ψ2, *_, ψ5 = self(self.lagrangians.xyz)
+
+        return np.sort(np.unique(np.r_[
+            np.linspace(*map(get_value, [zmin * self.k, ψ1]), n01, endpoint=False),
+            get_value(ψl),
+            np.linspace(*map(get_value, (ψ2, ψ5)), n25, endpoint=False)[1:],
+            zmax or get_value(ψ5) * 1.005]
+        ))
+
+    def _on_rotate(self, event):  # sourcery skip: de-morgan
+
+        if (event.inaxes is not (ax := self.axes) or
+                (ax.button_pressed not in ax._rotate_btn)):
+            return
+
+        if None in (self._zbar, self._contours):
+            return
+
+        self._update_zbar()
+
+    def _update_zbar(self):
+        ax = self.axes
+        zax = ax.zaxis
+        nseg = 50
+        xyz = np.empty((3, nseg))
+        mins, maxs, *_, highs = zax._get_coord_info(ax.figure._cachedRenderer)
+        (x1, y1, _), _ = zax._get_axis_line_edge_points(
+            np.where(highs, maxs, mins),
+            np.where(~highs, maxs, mins))
+        xyz[:2] = np.array((x1, y1), ndmin=2).T
+        xyz[2] = self._zbar._z
+        self._zbar.set_segments(fold.fold(xyz.T, 2, 1, pad=False))
+
+    def _on_first_draw(self, event):
+        if self._zbar:
+            self._update_zbar()
+        return super()._on_first_draw(event)
+
+    def plot3d(self, ax=None, xyz=None,
+               wireframe=(),
+               lagrangians=ARTIST_PROPS_3D.lagrange,
                contours=()):
 
         ax = ax or self.axes
 
         # Potential well
-        xyz = self.make_surface()
-        wf = self.plot_wireframe(ax, xyz, **dict(wireframe))
-
-        # Lagrangian points
-        Lpoints, = ax.plot3D(*(xyz_ := self.lagrangians.xyz)[:2], self(xyz_),
-                             **dict(lagrangians))
+        if xyz is None:
+            xyz = self.make_surface()
+                    
+        wf = None
+        zomx = None
+        if wireframe is not False:
+            wf = self.plot_wireframe(ax, xyz, **dict(wireframe))
+            zomx = wf.get_zorder()
 
         # Equipotentials
-        contours = self.plot_contour3d(ax, xyz, **dict(contours))
+        if contours is not False:
+            contours, zline = self.plot_contour3d(ax, get_value(xyz),
+                                                  **dict(contours))
+            zorders = [_.zorder for _ in contours.collections]
+            wf.set_zorder(min(zorders) - 0.1)
+            zomx = max(zorders)
+            # pl._sort_zpos = o
+        else:
+            contours = zline = None
 
-        ax.set_box_aspect((1, 1, 0.5))
-        #ax.azim, ax.elev = -90, 90
-        xyunit = getattr(self.a, 'unit', 'a')
-        zunit = getattr(xyz[-1], 'unit', r'\left[\frac{GM}{2a}\right]')
+        # Lagrangian points
+        Lpoints = None
+        if lagrangians is not False:
+            Lpoints, = ax.plot3D(*(ρ := self.lagrangians.xyz)[:2], self(ρ),
+                                 **dict(lagrangians), zorder=zomx)
 
-        ax.set_xlabel(f'$x\ [{xyunit}]$', usetex=True)
-        ax.set_ylabel(f'$y\ [{xyunit}]$',  usetex=True)
-        ax.set_zlabel(fr'$\Psi(x,y,0)\ {zunit}$', usetex=True)
-
-        return wf, Lpoints, contours
+        return AttrReadItem(wf=wf, l=Lpoints, contours=contours, zline=zline)
+        # return wf, Lpoints, contours, zbarline
 
     plot3D = plot3d
 
-# class EquipotentialSolver(RochePotential):
-#     pass  # TODO
+
+# aliases
+TwoBodyPotential = BinaryPotential = RochePotential
 
 
-class RocheSolver(RochePotential):  #
+@ftl.lru_cache()
+def solve_roche_radius(mu, level, theta, rmin, rmax):
+    return brentq(_binary_potential_polar1, rmin, rmax, (theta, mu, level))
+
+
+class EquipotentialSolver(LoggingMixin):
     """
     Solver for the Roche equipotential surfaces.
     """
+
+    def __init__(self, q=None, m=None, m1=None, m2=None, a=None, P=None):
+        #
+        self.u = self.Ψ = RochePotential(q, m, m1, m2, a, P)
+
+    def __call__(self, res=RESOLUTION.alt, theta=None, reflect=None,
+                 primary=False):
+        return self.solve(res, theta, reflect, primary)
 
     def _solve_radius(self, theta, level=None, primary=False):
         """
@@ -816,24 +1146,19 @@ class RocheSolver(RochePotential):  #
 
         #
         if level is None:
-            level = -self.psi0
+            level = -self.u.ψ1 / self.u.k
 
-        # if level > self.psi0:
+        # if level > self.psi1:
         #     # ignore `primary' parameter
         #     'use binary potential CoM'
 
         # use symmetry to solve for both lobes with primary equation
-        if primary:  # primary
-            mu = 1 - self.mu
-            invert = -1
-        else:  # secondary
-            mu = self.mu
-            invert = 1
+        invert = (-1, 1)[primary]
+        mu = (not primary) + invert * self.u.mu
 
         # get interval on radius containing root
         rmin = 1e-6  # will not work if Roche lobe is smaller than this
         # (that is, for a very extreme mass ratio)
-        rmax = invert * self.l1.x - mu + 1  # distance from point mass to L1
 
         # Since the solver uses a root finding algorithm, it cannot be used to
         # solve for the equipotential point at L1 (which is a saddle point)
@@ -841,15 +1166,15 @@ class RocheSolver(RochePotential):  #
 
         # radial distance from point mass location (center of star) to L1 point
         r = np.ma.empty_like(theta)
-        # substitute exact L1 point
-        r[l1] = rmax
+        # distance  to L1 # substitute exact L1 point
+        r[l1] = rmax = float(invert * (self.u.l1.x / self.u.a) - mu + 1)
 
+        # todo multiprocess
         for i in np.where(~l1)[0]:
-            # todo memoize solver for efficiency !
-            r[i] = brentq(_binary_potential_polar1,
-                          rmin, rmax, (theta[i], mu, level))
+            r[i] = solve_roche_radius(mu, level, theta[i], rmin, rmax)
 
-        return r, mu - 1, invert
+        # centre = float(self.u.mu - primary)
+        return r, float(self.u.mu - primary), invert
 
     def _solve(self, theta, level=None, primary=False):
         # solve radius
@@ -858,46 +1183,53 @@ class RocheSolver(RochePotential):  #
         # coordinate conversion
         x, y = pol2cart(r, theta)
         # shift to CoM & flip left-right
-        return (x + xoff) * xflip, y
 
-    def solve(self, res=RESOLUTION.alt, theta=None, reflect=None, primary=False,
-              scale=1.):
+        a = self.u.a
+        return (x * xflip + xoff) * a, y * a
+
+    def solve(self, res=RESOLUTION.alt, theta=None, reflect=None, primary=False):
         """
-        Solve for the roche lobe surface. Return x, y points on the 2d surface
-        in the CoM coordinate frame.
+        Solve for the Roche surface equipotenial contour. Return x, y points on
+        the 2d surface (contour) in the CoM coordinate frame.
 
         Parameters
         ----------
-        res : [type], optional
-            [description], by default RESOLUTION.alt
-        theta : [type], optional
-            [description], by default None
-        reflect : [type], optional
-            [description], by default None
+        res : float, optional
+            Angular resolution of the radial profile in points per π radians, by
+            default RESOLUTION.alt.
+        theta : np.ndarray, optional
+            Angle(s) (clockwise from the line of centres) for which the radius
+            of the equipotential surface will be solved. The default is None,
+            which means *res* number of equispaced angles between 0 and π.
+        reflect : bool, optional
+            Whether to reflect the solved points about the x-axis to get the
+            bottom (-z) part of the roche lobe surface. Default is to reflect
+            the solution if user provides *theta* angles for solution explicitly.
         primary : bool, optional
-            [description], by default False
-        scale : [type], optional
-            [description], by default 1.
+            Whether to solve for the primary (accretor) or secondary (donor),
+            by default False, implying secondary.
+        scale : float, Quantity, optional
+            Length scale by which the solution will be multiplied, by default
+            scale by the value of the semi-major axis *a*.
 
         Examples
         --------
-        >>>
+        >>> self.solve(10, primary=True)
 
         Returns
         -------
-        [type]
-            [description]
+        x, y : np.ndarray
+            Roche surface equipotential points.
         """
 
         # if `theta' array given don't reflect unless explicitly asked to
         # do so by `reflect=True`
-        auto_range = theta is None
+        auto_range = (theta is None)
         reflect = auto_range if reflect is None else reflect
-        theta = (np.linspace(0, π, res) if auto_range else
-                 np.atleast_1d(theta))
+        theta = (np.linspace(0, π, res) if auto_range else np.atleast_1d(theta))
 
         # solve contour
-        x, y = self._solve(theta, -self.psi0, primary) * scale
+        x, y = np.array(self._solve(theta, -self.u.ψ1 / self.u.k, primary))
 
         # use reflection symmetry to construct the full contour
         if reflect:
@@ -907,7 +1239,7 @@ class RocheSolver(RochePotential):  #
 
     # def solve_contour(self, mu, theta, level, primary=False):
     #     # FIXME get this working
-    #     if level > self.psi0:
+    #     if level > self.psi1:
     #         fun = _binary_potential_polar_com
     #     else:
     #         pass
@@ -918,7 +1250,7 @@ class RocheSolver(RochePotential):  #
     #         r[i] = brentq(
     #             _binary_potential_polar1, rmin, rmax, (theta[i], mu, level))
 
-    def make_surface(self, res, primary, scale=1., phi=None):
+    def make_surface(self, res, primary, scale=None, phi=None):
         """
         Solve 1D roche lobe, and use rotational symmetry (along the line of
         centres) to generate 3D Roche lobe surface.
@@ -942,118 +1274,35 @@ class RocheSolver(RochePotential):  #
         Y, Z = np.einsum('ijk,jl->ikl', rotation_matrix_2d(phi), [y, z])
         return X, Y, Z
 
-    # def solve(self, res=30, full=True):
-    #     raise NotImplementedError
 
-    # def _solve(self, func, interval, Theta, level=None):
-    #     """
-    #     Solve for the shape of the Roche lobes in polar coordinates centred
-    #     on the star.
-    #
-    #     Parameters
-    #     ----------
-    #     func
-    #     interval
-    #     Theta
-    #     level:  float, optional
-    #         Value of the potential at which to draw the contours.  Default is
-    #         to use the value of the potential at the inner Lagrange point L1.
-    #
-    #     Returns
-    #     -------
-    #
-    #     """
-    #
-    #     #
-    #     if level is None:
-    #         level = self.psi0
-    #
-    #     r = np.ma.empty_like(Theta)
-    #     for i, theta in enumerate(Theta):
-    #         r[i] = brentq(func, *interval, (theta, mu, level))
-    #
-    #     return r
-    #
-    #     # # TODO: do this better. first transform based on q, then deal with
-    #     # # special cases of theta, then solve for remaining
-    #     #
-    #     # # Theta = np.linspace(0, π, res)
-    #     # A = np.ma.empty_like(Theta)
-    #     # for i, theta in enumerate(Theta):
-    #     #     try:
-    #     #         # WARNING: problems at θ = 0: inaccurate
-    #     #         # and θ = π: ValueError: f(a) and f(b) must have different signs
-    #     #         # fixme: maybe deal explicitly with these instead of trying
-    #     #         # to catch at every computation.  Then you can return array
-    #     #         # instead of masked array which seems unnecessary
-    #     #         A[i] = brentq(func, *interval, (self.mu, theta, self.psi0))
-    #     #     except ValueError as err:
-    #     #         warnings.warn(
-    #     #                 'ValueError %s\nMasking element %i (theta = %.3f)' %
-    #     #                 (str(err), i, theta))
-    #     #         A[i] = np.ma.masked  # exceptions are masked for robustness
-    #     # return Theta, A
+class RocheLobe(Axes3DHelper):
 
-
-# class RocheSolver1(RocheSolver):
-#     rres, _ = RocheSolver.res_default
-
-# def _vec_solve(self, func, interval, theta, mu, level):
-#     for i in np.where(~l1)[0]:
-#         # noinspection PyTypeChecker
-#         r[i] = brentq(
-#                 _binary_potential_polar1, rmin, rmax, (theta[i], mu, level))
-
-
-# class RocheSolver2(RocheSolver):
-#     rres, _ = RocheSolver.res_default
-#
-#     def solve(self, res=30, full=True):
-#         pass
-
-
-# def solve(self, res=rres, reflect=None, theta=None):
-#     """Returns the secondary Roche Lobe in 2D"""
-#     #
-#
-#     if theta is None:
-#         theta = np.linspace(0, π, res)
-#         reflect = True
-#     else:
-#         # if `theta' array given don't reflect unless explicitly asked to
-#         #  do so by `reflect=True`
-#         theta = np.atleast_1d(theta)
-#         reflect = reflect or False
-#
-#     # Since the solver uses a root finding algorithm, it cannot be used to
-#     # solve for the equipotential point at L1 (which is a saddle point)
-#     l1 = (theta == π)
-#
-#     # solve contour
-#     rmax = self.mu - self.l1.x
-#     r = np.empty_like(theta)
-#     r[~l1] = self._solve(
-#             _binary_potential_polar2, (1e-6, rmax), theta[~l1])
-#     # sub exact L1 point
-#     r[theta == π] = self.mu - self.l1.x
-#
-#     # coordinate conversion
-#     x, y = pol2cart(r, theta)
-#     x += self.mu  # shift to CoM
-#
-#     if full:
-#         # use reflection symmetry
-#         return np.r_[x[::-1], x], np.r_[y[::-1], -y]
-#
-#     return x[::-1], y[::-1]
-
-
-class RocheLobe(RocheSolver, Axes3DHelper):
-
-    def __init__(self, q=None, m1=None, m2=None, a=None, P=None, primary=False):
-
-        RocheSolver.__init__(self, q, m1, m2, a, P)
+    def __init__(self, solver, primary=False):
+        self.solver = solver
+        self.u = self.solver.u
         self.primary = bool(primary)
+
+    @lazyproperty
+    def rmax(self):
+        # distance from object center to L1
+        invert = (-1, 1)[self.primary]
+        mu = (not self.primary) + invert * self.u.mu
+        return invert * (self.u.l1.x / self.u.a) - mu + 1
+
+        # use symmetry to solve for both lobes with primary equation
+        # if self.primary:  # primary
+        #     mu = 1 - self.solver.u.mu
+        #     invert = -1
+        # else:  # secondary
+        #     mu = self.solver.u.mu
+        #     invert = 1
+
+        # # distance  to L1
+        # return invert * (self.u.l1.x / self.u.a) - mu + 1
+
+    def solve_radius(self, theta):
+        return self.solver._solve_radius(theta, -self.u.ψ1 / self.u.k,
+                                         self.primary)
 
     def plot2d(self, ax=None, res=RESOLUTION.azim, **kws):
         """
@@ -1071,10 +1320,8 @@ class RocheLobe(RocheSolver, Axes3DHelper):
         if ax is None:
             _, ax = plt.subplots()
 
-        x1, y1 = self.solve(res, primary=self.primary, scale=self.a)
-
+        x1, y1 = self.solver(res, primary=self.primary)
         lobe, = ax.plot(x1, y1, **kws)
-
         return ax, lobe
 
     plot2D = plot2d  # FIXME not inherited if overwritten
@@ -1095,7 +1342,7 @@ class RocheLobe(RocheSolver, Axes3DHelper):
         """
 
         poly3 = ax.plot_wireframe(
-            *self.make_surface(res, self.primary, self.a),
+            *self.solver.make_surface(res, self.primary),
             **kws)
         return ax, poly3
 
@@ -1105,46 +1352,47 @@ class RocheLobe(RocheSolver, Axes3DHelper):
                 resolution in r and/or theta
         """
         ax = ax or self.axes
-        x, y, z = self.make_surface(res, self.primary, self.a)
+        x, y, z = self.solver.make_surface(res, self.primary)
         poly3 = ax.plot_surface(x, y, z, **kws)
         return ax, poly3
 
 
-class RocheLobes(RocheLobe):
+class RocheLobes(Axes3DHelper):
     # res_default = rres, _ = RocheSolver1.res_default
 
-    def __init__(self,  q=None, m1=None, m2=None, a=None, P=None):
+    def __init__(self,  q=None, m=None, m1=None, m2=None, a=None, P=None):
         """
         """
+
+        self.solver = EquipotentialSolver(q, m, m1, m2, a, P)
+        self.u = self.solver.u
+
         # accretor
-        super().__init__(q, m1, m2, a, P)
-        self.primary = self.accretor = self
+        # super().__init__(q, m, m1, m2, a, P)
+        self.primary = self.accretor = RocheLobe(self.solver, True)
         # donor
-        self.secondary = self.donor = RocheLobe(q, m1, m2, a, P, False)
+        self.secondary = self.donor = RocheLobe(self.solver, False)
 
     def plot2d(self, ax=None, res=RESOLUTION.azim, **kws):
 
         # plot both lobes on same axes
         if ax is None:
-            fig, ax = plt.subplots()
+            _, ax = plt.subplots()
 
-        _, pri = self.primary.plot2d(ax, res,
-                                     label='Primary',
-                                     color='g')
-        _, sec = self.secondary.plot2d(ax, res,
-                                       label='Secondary',
-                                       color='orange')
+        _, pri = self.accretor.plot2d(ax, res, **ARTIST_PROPS_2D.accretor)
+        _, sec = self.donor.plot2d(ax, res, **ARTIST_PROPS_2D.donor)
 
-        mu = self.primary.mu
-        lagrangeMarks, = ax.plot(*self.primary.lagrangians2D.T, 'm.')
-        centreMarks, = ax.plot(np.multiply([mu, mu - 1], self.primary.a),
-                               [0, 0],
-                               'g+', label='centres')
-        comMarks, = ax.plot(0, 0, 'rx', label='CoM')
-        artists = pri, sec, lagrangeMarks, comMarks, centreMarks
+        Lpoints, = ax.plot(*get_value(self.u.lagrangians.xyz[:2]),
+                           **ARTIST_PROPS_2D.lagrange)
+        centreMarks, = ax.plot([self.u.r1.x.value, self.u.r2.x.value], [0, 0],
+                               **ARTIST_PROPS_2D.centres)
+        comMarks, = ax.plot(0, 0, **ARTIST_PROPS_2D.CoM)
+        artists = pri, sec, Lpoints, comMarks, centreMarks
 
         ax.grid()
-        ax.set(xlabel='x (a)', ylabel='y (a)')
+        unit = getattr(self.u.a, 'unit', 'a')
+        ax.set(xlabel=f'x [{unit}]',
+               ylabel=f'y [{unit}]')
 
         return ax, artists
 
@@ -1154,8 +1402,9 @@ class RocheLobes(RocheLobe):
 
         # Label lagrangian points
         texts = []
-        for i, xy in enumerate(self.primary.lagrangians2D):
-            text = ax.annotate('L%i' % (i + 1), xy, xy + txt_offset, **kws)
+        txt_offset = np.array(txt_offset) * get_value(self.u.a)
+        for i, xy in enumerate(self.u.lagrangians.xyz[:2].T):
+            text = ax.annotate(f'L{i + 1}', xy, xy + txt_offset, **kws)
             texts.append(text)
 
         return texts
