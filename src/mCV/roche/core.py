@@ -2,14 +2,11 @@
 Methods for solving and plotting Roche lobe surfaces in 2d and 3d.
 """
 
+
+# Kopal: 1972AdA&A...9....1K
+
 # TODO: note the basic equations + references here
 
-
-# todo: Seidov 20xx
-# http://iopscience.iop.org.ezproxy.uct.ac.za/article/10.1086/381315/pdf
-# def q_of l1(q):
-# def q_of_l2(q):
-# def q_of_l3(q):
 
 # std
 import inspect
@@ -21,6 +18,7 @@ from collections import namedtuple
 # third-party
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 from scipy.optimize import brentq
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from astropy import units as u
@@ -48,6 +46,8 @@ _4π2 = 4 * π * π
 
 Mo = u.M_sun
 Ro = u.R_sun
+lightseconds = u.def_unit('lightseconds', (u.lyr / float(u.a.to('s'))))
+
 # ---------------------------------------------------------------------------- #
 
 # Default units for orbital Parameters
@@ -95,7 +95,7 @@ class apply_default_units(Decorator):
 
     def __init__(self, default_units=(), **kws):
         self.sig = None     # placeholder
-        for _, unit in dict(default_units, **kws).items():
+        for unit in dict(default_units, **kws).values():
             assert isinstance(unit, u.UnitBase)
 
         self.default_units = default_units
@@ -164,21 +164,58 @@ def semi_major_axis(p, m1, m2) -> u.AU:
     """
     return np.cbrt(p * p * G * (m1 + m2) / _4π2)
 
+# @
 
-def L1(q):  # xtol=1.e-9
-    """
-    Inner Lagrange points in units of binary separation a from origin CoM
 
-    Parameters
-    ----------
-    q
-    xtol
+def q_of_l1(x1):
+    #  Seidov 2004 eq 3
+    # http://dx.doi.org/10.1086/381315
+    x12 = x1 * x1
+    return (1 - x1) ** 3 * (1 + x1 + x12) / (x1 ** 3 * (3 - 3 * x1 + x12))
 
-    Returns
-    -------
 
-    """
-    return RochePotential(q).l1
+def psi1(x1):
+    #  Seidov 2004 eq 4
+    t = x1 * (1 - x1)
+    return np.polyval([-4, -10, 15, -12, 3], t) / np.polyval([1, 2, -1], t)
+
+
+def q_of_l2(x2):
+    #  Seidov 2004 Eq 6:
+    x22 = x2 * x2
+    return (x2 - 1) ** 3 * (1 + x2 + x22) / ((x22 * (2 - x2) * (1 - x2 + x22)))
+
+
+def psi2(x2):
+    #  Seidov 2004 eq 9
+    return np.divide(np.polyval([4, -14, 18, 9, -36, 27, -4, -1], x2),
+                     np.polyval([1, -2, 1, 2, -1], x2))
+
+
+def q_of_l3(x):
+    return 1 / q_of_l2(1 - x)
+
+# def q_of_l3(x3):
+#     #  Seidov 2004 eq 8: WARNING: This equation in the paper is wrong!!
+#     x32 = x3 * x3
+#     return (2 - x3) * x32 * (1 - x3 + x32) / ((x3 - 1) ** 3 * (1 + x3 + x32))
+
+
+def _lagrange_objective_seidov(x, f, q):
+    return f(x) - q
+
+
+def _solve_lagrange123_seidov(i, q, xtol=1e-9):
+    # faster solver for Lagrange points: Typically 3-5x faster than the
+    # _solve_lagrange function
+    assert i in (1, 2, 3), f'Invalid identifier for Lagrange point: {i}.'
+
+    objective, interval = ((q_of_l1, (0, 1)) if i == 1 else
+                           (q_of_l2, (1, 2)) if i == 2 else
+                           (q_of_l3, (-1, 0)))
+    interval += np.array([1, -1]) * xtol
+    r1 = brentq(_lagrange_objective_seidov, *interval, (objective, q), xtol)
+    return r1 + 1 / (q + 1) - 1
 
 
 def binary_potential_com(q, x, y, z):
@@ -307,6 +344,149 @@ def _lagrange_objective(x, mu):
     return (+ x * x1sq * x2sq
             - mu * np.sign(x2) * x1sq
             - (1 - mu) * np.sign(x1) * x2sq)
+
+
+def _solve_lagrange123(i, q, xtol=1e-6):
+    """
+    Solve for L1, L2, or L3 x position in the CoM frame in units of semi-major
+    axis *a*.
+
+    Parameters
+    ----------
+    i : {1,2,3}
+        L point to solve for
+    q : float
+        Mass ratio m2/m1
+    xtol : float
+        Tolarance value for solver.
+
+    Returns
+    -------
+    float
+        Distance to L1 in CoM coordinates in units of semi-major axis *a*.
+
+    """
+    assert i in (1, 2, 3), f'Invalid identifier for Lagrange point: {i}.'
+
+    δ = 1e-6
+    mu = 1. / (q + 1.)
+
+    i -= 2
+    interval = [-2, 2]
+    δs = (δ, -δ)
+    o = (-2, i)[i <= 0]
+    for j in ((0, 1) if i == -1 else [i]):
+        interval[j] = mu + δs[j] + o + j
+
+    # if i == 1:    (mu - 1 + δ,    mu - δ)
+    # elif i == 2:  (mu + δ,        2)
+    # else:         (-2,            mu - 1 - δ)
+
+    # {(-1, 0): -1,  # i + j
+    #  (-1, 1):  0,  # i + j
+    #  (0,  0):  0,  # i + j
+    #  (1,  1): -1}  # (-2, i)[i <= 0] + j
+    # print(interval)
+    return brentq(_lagrange_objective, *interval, (mu,), xtol)
+
+
+# def l1(q):  # xtol=1.e-9
+#     """
+#     Inner Lagrange points in units of binary separation a from origin CoM
+
+#     Parameters
+#     ----------
+#     q
+#     xtol
+
+#     Returns
+#     -------
+
+#     """
+#     return RochePotential(q).l1.x
+
+
+def l1(q):
+    """
+    Inner Lagrange point (L1): The critical point between the two masses where 
+    the gravitational attraction of M1 and that of M2 are equal and opposite.
+
+    Parameters
+    ----------
+    q : numbers.Real
+        Mass ratio m2/m1
+
+    Returns
+    -------
+    float
+        x-coordinate distance from centre-of-mass in units of *a*.
+    """
+    return _solve_lagrange123_seidov(1, q)
+
+
+def l2(q):
+    """
+    Outer Lagrange point (L2): The point in the frame nearest the less massive
+    body, where the combined gravitational force of both masses are equal and
+    opposite the centrifugal force in the co-rotating frame. 
+
+
+    Parameters
+    ----------
+    q : numbers.Real
+        Mass ratio m2/m1
+
+    Returns
+    -------
+    float
+        x-coordinate distance from centre-of-mass in units of *a*.
+    """
+    return _solve_lagrange123_seidov(2, q)
+
+
+def l3(q):
+    """
+    Outer Lagrange point (L3): The point nearest the more massive body, where
+    the combined gravitational force of both masses are equal and opposite the
+    centrifugal force in the co-rotating frame.
+
+    Parameters
+    ----------
+    q : numbers.Real
+        Mass ratio m2/m1.
+
+    Returns
+    -------
+    float
+        x-coordinate distance from centre-of-mass in units of *a*.
+    """
+    return _solve_lagrange123_seidov(3, q)
+
+
+def l4(q):
+    # L4 has analytic solution
+    return np.array([1 / (q + 1) - 0.5, np.sqrt(3) / 2, 0])
+
+
+def l5(q):
+    # L5 has analytic solution
+    return l4 * [1, -1, 1]
+
+
+def L(i, q):
+    return LPOINT_FUNCS[int(i)](q)
+
+
+# aliases
+L1 = l1
+L2 = l2
+L3 = l3
+L4 = l4
+L5 = l5
+
+# Lagrange point function map
+LPOINT_FUNCS = dict(enumerate([l1, l2, l3, l4, l5], 1))
+
 
 # ---------------------------------------------------------------------------- #
 
@@ -792,30 +972,17 @@ class RochePotential(BinaryParameters, Axes3DHelper):
     # Lagrange Points
     # ------------------------------------------------------------------------ #
 
-    def _solve_lagrange123(self, interval, xtol=xtol):
-        """
-        Solve for L1, L2, or L3 (depending on given interval)
-
-        Parameters
-        ----------
-        interval
-
-        Returns
-        -------
-
-        """
-        lx = brentq(_lagrange_objective, *interval, (self.mu,), xtol)
+    def _lagrange123(self, i, xtol=xtol):
+        lx = _solve_lagrange123_seidov(i, self._q, xtol)
         return CartesianRepresentation((lx, 0, 0)) * self.a
 
     @lazyproperty
     def l1(self):
         """
-        Inner Lagrange point (L1): The point where the gravitational
-        attraction of M2 and that of M1 are equal and opposite.
+        Inner Lagrange point (L1) in the : The point where the gravitational
+        attraction of M1 and that of M2 are equal and opposite.
         """
-        δ = 1e-6
-        interval = (self.mu - 1 + δ, self.mu - δ)
-        return self._solve_lagrange123(interval)
+        return self._solve_lagrange123_seidov(1)
 
     @lazyproperty
     def l2(self):
@@ -824,9 +991,7 @@ class RochePotential(BinaryParameters, Axes3DHelper):
         the less massive body, where the combined gravitational force of both
         masses are equal and opposite the centrifugal force.
         """
-        δ = 1e-6
-        interval = self.mu + δ, 2
-        return self._solve_lagrange123(interval)
+        return self._solve_lagrange123_seidov(2)
 
     @lazyproperty
     def l3(self):
@@ -835,16 +1000,12 @@ class RochePotential(BinaryParameters, Axes3DHelper):
         the most massive body, where the combined gravitational force of both
         masses are equal and opposite the centrifugal force.
         """
-        δ = 1e-6
-        interval = -2, self.mu - 1 - δ
-        return self._solve_lagrange123(interval)
+        return self._solve_lagrange123_seidov(3)
 
     @lazyproperty
     def l4(self):
         # L4 has analytic solution
-        return CartesianRepresentation(
-            np.array([self.mu - 0.5, np.sqrt(3) / 2, 0]) * self.a
-        )
+        return CartesianRepresentation(l4(self._q) * self.a)
 
     @lazyproperty
     def l5(self):
