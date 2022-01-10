@@ -17,7 +17,8 @@ from recipes.transforms import sph2cart
 from recipes.transforms.rotation import EulerRodriguesMatrix
 
 # relative
-from .roche import Axes3DHelper
+from .utils import get_value
+from .roche.core import SpatialAxes3D, get_unit_string
 
 
 π = np.pi
@@ -139,18 +140,25 @@ class MagneticDipole(Axes3DHelper):
             (np.sin(self.phi), -np.cos(self.phi), 0), self.theta
         ).matrix
 
-    def flux_density(self, r):
-        """Flux density at vector at position r"""
+    def H(self, xyz):
+        """
+        Flux density (H-field) at cartesian position *xyz*.
+        """
 
-        # If r is unitless, assume its given ito orbital semi-major axis *a*
-        # if isinstance(r, Quantity):
-
-        r = np.array(r)
-
-        rd = np.linalg.norm(r)  # *
+        assert xyz.shape[-1] == 3
+        r = np.array(xyz)
+        rd = np.linalg.norm(r, axis=-1, keepdims=True)
         rhat = r / rd
         m = self.moment
-        return mu0 * (3 * rhat * (m * rhat).sum(0) - m) / (4 * π * rd ** 3)
+        return (3 * rhat * (m * rhat).sum(-1, keepdims=True) - m) / (4 * π * rd ** 3)
+
+    def B(self, xyz):
+        return mu0 * self.H(xyz)
+
+    def flux_density(self, xyz):
+        return np.linalg.norm(self.B(xyz), axis=-1)
+
+    # def fieldline(self, theta, phi)
 
     def fieldlines(self, nshells=3, naz=5, res=100, scale=1., bounding_box=None,
                    rmin=0.):
@@ -190,50 +198,56 @@ class MagneticDipole(Axes3DHelper):
         φ = np.linspace(0, 2 * π, naz, endpoint=False)[None].T
         # self.surface_theta = []
         if rmin:
-            # NOTE: each field line is split into sections so that the
-            # projection zorder gets calculated correctly for all viewing angles.
-            # Fieldlines terminate on star surface.
-            shells = []
+            fieldlines = np.empty((nshells, naz, res, 3))
+            flux_density = np.empty((nshells, naz, res))
+            φ = np.linspace(0, 2 * π, naz, endpoint=False)[None].T
+
             for i in range(1, nshells + 1):
                 theta0 = np.arcsin(np.sqrt(rmin / scale / i))
-                # self.surface_theta.append(theta0 + self.phi)
+                θ = np.linspace(theta0, π - theta0, res)
+                fieldlines[i-1] = xyz = np.moveaxis(i * dipole_fieldline(θ, φ), 0, -1)
 
-                break1 = π / 4
-                intervals = mit.pairwise((theta0, break1,  π / 2 + break1, π - theta0))
-                for th0, th1 in intervals:
-                    θ = np.linspace(th0, th1, res)
-                    θ = np.append(θ, np.nan)  # so the shells are not connected
-                    shells.append(i * dipole_fieldline(θ, φ))
-                    # break
-            fieldlines = np.rollaxis(np.array(shells), 1, 4
-                                     ).reshape((nshells, -1, 3))
+                # Note: since flux density indep of phi, this calculation is not
+                # repeated unnecessarily for phi above
+                flux_density[i-1] = self.flux_density(xyz[0])
+
+            # embed()
+
+            # TODO: each field line is split into sections so that the
+            # projection zorder gets calculated correctly for all viewing
+            # angles. Fieldlines terminate on star surface. ???
+            # fieldlines = fieldlines.reshape((-1, res, 3))
+            # flux_density = flux_density.reshape((-1, res))
             # return fieldlines
         else:
             # convert to Cartesian coordinates
-            shells = np.arange(1, nshells + 1)[None, None].T  # as 3D array
-            fieldlines = shells * np.rollaxis(dipole_fieldline(θ, φ),
-                                              0, 3).reshape(-1, 3)
+            line = dipole_fieldline(θ, φ)  # as 3D array
+            shells = np.arange(1, nshells + 1)[(np.newaxis, ) * line.ndim].T
+            fieldlines = np.linalg.norm(
+                self.moment) * shells * np.rollaxis(line, 0, 3)  # .reshape(-1, 3)
+            flux_density = self.flux_density(fieldlines)
 
         # tilt
-        if self.az or self.alt:
+        if self.phi or self.theta:
             # 3D rotation!
-            fieldlines = np.rollaxis(np.tensordot(self.R, fieldlines, [0, -1]),
+            fieldlines = np.rollaxis(np.tensordot(self._R, fieldlines, (0, -1)),
                                      0, fieldlines.ndim)
+
+        origin = get_value(self.origin).T
+        bbox = bounding_box
+        if bbox:
+            if np.size(bbox) <= 1:
+                bbox = np.tile([-1, 1], (3, 1)) * bbox
+            xyz = fieldlines - bbox.mean(1)
+            fieldlines[(xyz < bbox[:, 0]) | (bbox[:, 1] < xyz)] = np.ma.masked
 
         # scale
         fieldlines *= scale
 
         # shift to origin
-        fieldlines += self.origin.T
+        fieldlines += origin
 
-        bbox = bounding_box
-        if bbox:
-            if np.size(bbox) <= 1:
-                bbox = np.tile([-1, 1], (3, 1)) * bbox
-            xyz = (fieldlines - self.origin.T) - bbox.mean(1)
-            fieldlines[(xyz < bbox[:, 0]) | (bbox[:, 1] < xyz)] = np.ma.masked
-
-        return fieldlines
+        return fieldlines, flux_density  # .ravel()
 
     def boxed(self, fieldlines, box):
         box = 3
