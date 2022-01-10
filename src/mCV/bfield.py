@@ -8,9 +8,9 @@ import more_itertools as mit
 from astropy import units as u
 from astropy.constants import mu0
 from astropy.units.quantity import Quantity
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
-from numpy.lib.arraysetops import isin
-
+from astropy.utils.decorators import lazyproperty
+from astropy.coordinates import (BaseRepresentation, CartesianRepresentation,
+                                 PhysicsSphericalRepresentation)
 
 # local
 from recipes.transforms import sph2cart
@@ -22,26 +22,26 @@ from .roche import Axes3DHelper
 
 π = np.pi
 
-MOMENT_DEFAULT = 1 * u.Unit('J/T')
+JoulePerTesla = u.J / u. T
+MOMENT_DEFAULT = 1 * JoulePerTesla
 
 
 def dipole_fieldline(θ, φ):
-    sinθ = np.sin(θ)
-    r = sinθ * sinθ  # * Re
-    rsinθ = r * sinθ
-    return np.array([rsinθ * np.cos(φ),
-                     rsinθ * np.sin(φ),
-                     r * np.cos(θ) * np.ones_like(φ)])
-    # return np.rollaxis(np.tensordot(self.R, xyz, [0, -1]), 0, xyz.ndim)
+
+class CartesianRepresentation(CartesianRepresentation):
+
+    @property
+    def rθφ(self):
+        return self.represent_as(PhysicsSphericalRepresentation)
 
 
 class MagneticField:
     """ABC for MagneticField models"""
 
     @classmethod
-    def dipole(origin=(0, 0, 0), moment=MOMENT_DEFAULT, *,
-               alt=None, az=None):
-        return MagneticDipole(origin, moment, alt, az)
+    def dipole(cls, origin=(0, 0, 0), moment=MOMENT_DEFAULT, *,
+               theta=0, phi=0):
+        return MagneticDipole(origin, moment, theta=theta, phi=phi)
 
 
 class MagneticDipole(Axes3DHelper):
@@ -51,7 +51,7 @@ class MagneticDipole(Axes3DHelper):
     # TODO multipoles
 
     def __init__(self, origin=(0, 0, 0), moment=MOMENT_DEFAULT, *,
-                 alt=None, az=None):
+                 theta=0, phi=0):
         """
         [summary]
 
@@ -70,26 +70,74 @@ class MagneticDipole(Axes3DHelper):
         --------
         >>> 
         """
-        self.origin = np.array(origin)
-
+        self.origin = np.asanyarray(origin)
+        
         if isinstance(moment, numbers.Real) or \
-                (isinstance(moment, np.ndarray) and moment.ndim in (0, 1)):
-            # note Quantity isa ndarray
-            direction = sph2cart(1, *np.radians((alt or 0, az or 0)))
-            moment = moment * np.array(direction)
-
-        if not isinstance(moment, Quantity):
-            moment = np.array(moment) * (u.A / u.m ** 2)
-            direction = (v := moment.value) / np.linalg.norm(v)
-
-        assert len(moment) == 3
+                (isinstance(moment, np.ndarray) and moment.size == 1):
+            # NOTE Quantity isa ndarray
+            moment = moment * np.array(sph2cart(1, *np.radians((theta, phi))))
+        
         self.moment = moment
 
-        # get direction vector
-        x, y, z = self.direction = direction
-        self.alt = θ = np.arccos(z)
-        self.az = φ = np.arctan2(y, x)
-        self.R = EulerRodriguesMatrix((np.sin(φ), -np.cos(φ), 0), θ).matrix
+
+    def __repr__(self):
+        return _repr_helper(self, 'origin', 'moment')
+
+    @property
+    def moment(self):
+        return self._moment.xyz
+
+    @moment.setter
+    def moment(self, moment):
+        if isinstance(moment, BaseRepresentation):
+            self._moment = moment.represent_as(CartesianRepresentation)
+            del self.direction
+            return
+
+        if isinstance(moment, numbers.Real) or \
+                (isinstance(moment, np.ndarray) and moment.size == 1):
+            # note Quantity isa ndarray
+            direction = sph2cart(1, *np.radians((self.theta, self.phi)))
+            moment = moment * np.array(direction)
+
+        assert len(moment) == 3
+        if not isinstance(moment, Quantity):
+            moment = np.array(moment) * JoulePerTesla
+            # direction = (v := moment.value) / np.linalg.norm(v)
+
+        self._moment = CartesianRepresentation(moment)
+        del self.direction
+
+    @lazyproperty
+    def direction(self):
+        return (m := self._moment).xyz / m.norm()
+
+    @lazyproperty
+    def theta(self):
+        return self._moment.rθφ.theta.value
+
+    @theta.setter
+    def theta(self, theta):
+        self._moment = PhysicsSphericalRepresentation(self.phi, theta, self._moment.norm())
+        del self.direction
+
+    θ = theta
+
+    @property
+    def phi(self):
+        return self._moment.rθφ.phi.value
+
+    @phi.setter
+    def phi(self, phi):
+        self._moment = PhysicsSphericalRepresentation(phi, self.theta, self._moment.norm())
+
+    φ = phi
+
+    @lazyproperty
+    def _R(self):
+        return EulerRodriguesMatrix(
+            (np.sin(self.phi), -np.cos(self.phi), 0), self.theta
+        ).matrix
 
     def flux_density(self, r):
         """Flux density at vector at position r"""
