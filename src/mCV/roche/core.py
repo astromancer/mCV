@@ -9,40 +9,41 @@ Methods for solving and plotting Roche lobe surfaces in 2d and 3d.
 
 
 # std
-import inspect
-import numbers
 import textwrap as txw
 import functools as ftl
+import itertools as itt
 from collections import namedtuple
 
 # third-party
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
 from scipy.optimize import brentq
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from astropy import units as u
 from astropy.constants import G
 from astropy.utils import lazyproperty
-from astropy.units import UnitTypeError
 from astropy.units.quantity import Quantity
-from astropy.units.physical import PhysicalType
 from astropy.coordinates import CartesianRepresentation
 
 # local
 from recipes.array import fold
 from recipes import pprint as pp
 from recipes.dicts import AttrReadItem
-from recipes.decorators import Decorator
+from recipes.transforms import sph2cart
 from recipes.logging import LoggingMixin
 from recipes.misc import duplicate_if_scalar
-from recipes.transforms import pol2cart, rotation_matrix_2d
+
+# relative
+from ..axes_helpers import Axes3DHelper, SpatialAxes3D
+from ..utils import _check_units, default_units, get_unit_string, get_value
 
 
 # Module constants
 # ---------------------------------------------------------------------------- #
 π = np.pi
 _4π2 = 4 * π * π
+
+pi_frac = pp.formatters.FractionOfPi()
+pi_frac_formatter = FuncFormatter(pi_frac.latex)
 
 Mo = u.M_sun
 Ro = u.R_sun
@@ -79,53 +80,16 @@ RESOLUTION = namedtuple('Resolution', ('alt', 'azim'))(50, 35)
 # Helper functions
 # ---------------------------------------------------------------------------- #
 
+def _transform_αβ_θφ(α, β):
+    θ = np.arctan2(np.cos(α) * np.sin(β),  np.cos(β))
+    φ = np.arccos(np.sin(α) * np.sin(β))
+    return θ, φ
+
+# ---------------------------------------------------------------------------- #
+
+
 # Verify units
 verify_mass_unit = u.quantity_input(mass=['mass', 'dimensionless'])
-
-
-def get_value(x):
-    """Get numeric value from quantity or return object itself."""
-    return getattr(x, 'value', x)
-
-
-class apply_default_units(Decorator):
-    """
-    Decorator for applying default units to function input parameters.
-    """
-
-    def __init__(self, default_units=(), **kws):
-        self.sig = None     # placeholder
-        for unit in dict(default_units, **kws).values():
-            assert isinstance(unit, u.UnitBase)
-
-        self.default_units = default_units
-
-    def __call__(self, func):
-        self.sig = inspect.signature(func)
-        return super().__call__(func)
-
-    def __wrapper__(self, func, *args, **kws):
-        return func(**{
-            name: (val * self.default_units[name]
-                   if isinstance(val, (numbers.Real, np.ndarray)) else
-                   val)
-            for name, val in self.sig.bind(*args, **kws).arguments.items()
-        })
-
-
-def _check_units(namespace, allowed_physical_types):
-    for name, kind in allowed_physical_types.items():
-        if name not in namespace:
-            continue
-
-        obj = namespace[name]
-        if isinstance(kind, (str, PhysicalType)):
-            kind = (kind, )
-
-        if isinstance(obj, Quantity) and (obj.unit.physical_type not in kind):
-            raise UnitTypeError(f'Parameter {name} should have physical '
-                                f'type(s) {kind}, not '
-                                f'{obj.unit.physical_type}.')
 
 
 def _resolve_a_P(m, a, P):  # sourcery skip: de-morgan
@@ -808,68 +772,16 @@ class BinaryParameters(LoggingMixin):
     Ω = omega
 
 
-class Axes3DHelper:
-    """Launch a figure with 3D axes on demand."""
-
-    _cid = None
-
-    _subplot_kws = {'subplot_kw': dict(projection='3d')}
-
-    @lazyproperty
-    def axes(self):
-        return self.get_axes()
-
-    def get_axes(self):
-        fig, ax = plt.subplots(**self._subplot_kws)
-        self._cid = fig.canvas.mpl_connect('draw_event', self._on_first_draw)
-        return ax
-
-    def _on_first_draw(self, event):
-        # have to draw rectangle inset lines after first draw else they point
-        # to wrong locations on the edges of the lower axes
-        fix_axes_offset_text(self.axes)
-
-        # disconnect so this only runs once
-        self.axes.figure.canvas.mpl_disconnect(self._cid)
-
-
-def fix_axes_offset_text(ax):
-    # return
-    zax = ax.zaxis
-    offsetText = zax.offsetText
-    if offset := offsetText.get_text():
-        # mute offset text
-        offsetText.set_visible(False)
-
-        
-        # pp.METRIC_PREFIXES[zax.major.formatter.orderOfMagnitude]
-        # .k.unit.to_string()
-        # place with units in label
-        ax.set_zlabel(zax.label.get_text().replace(
-            r'\right]$',
-            fr'\times 10^{{{zax.major.formatter.orderOfMagnitude}}}\right]$'))
-
-
-# class Zbar:
-
-
-def zaxis_cmap(ax, zrange=(), nseg=50, cmap=None):
-    xyz = np.empty((3, nseg))
-    _, x1 = ax.get_xlim()
-    _, y1 = ax.get_ylim()
-    xyz[:2] = np.array((x1, y1), ndmin=2).T
-    z = xyz[2] = np.linspace(*(zrange or ax.get_zlim()), nseg)
-    l = Line3DCollection(fold.fold(xyz.T, 2, 1, pad=False),
-                         cmap=plt.get_cmap(cmap),
-                         array=xyz[2],
-                         zorder=10,
-                         lw=3)
-    ax.add_collection(l, autolim=False)
-    # print(xyz[[0, 1], 0])
-    l._z = z
-
-    ax.zaxis.line.set_visible(False)
-    return l
+    
+    
+    
+# def get_units(obj, default):
+#         units = {}
+#         for key, default_unit in dict(a='a').items():
+#             val = getattr(self.u, key)
+#             units[key] = (val.unit.to_string('latex').strip('$')
+#                           if hasattr(val, 'unit') else
+#                           default_unit)
 
 
 class RochePotential(BinaryParameters, Axes3DHelper):
