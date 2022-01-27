@@ -123,6 +123,9 @@ class Nauenberg(MassRadiusRelation):
 
 
 class WhiteDwarf(OriginInAxes):
+    """
+    Object representing a White Dwarf star.
+    """
 
     # Mass radius relation unit of solar radii
     mass_radius = Nauenberg()
@@ -301,8 +304,10 @@ class WhiteDwarf(OriginInAxes):
 # def bfield(bs)
 
 class MagneticWhiteDwarf(WhiteDwarf):
-    def __init__(self, mass, centre=ZERO,
-                 Bs=1 * u.MG, Balt=0, Baz=0, Boff=ZERO, B=None):
+    """
+    A White Dwarf star hosting a magnetic field.
+    """
+
         # \SIrange{7}{230}{\MG} \citep{Ferrario+2015}
 
         super().__init__(mass, centre)

@@ -78,7 +78,9 @@ def zaxis_cmap(ax, zrange=(), nseg=50, cmap=None):
 
 
 class Axes3DHelper:
-    """Launch a figure with 3D axes on demand."""
+    """
+    Launch a figure with 3D axes on demand.
+    """
 
     _cid = None
 
@@ -108,13 +110,15 @@ class Axes3DHelper:
 
 
 class SpatialAxes3D(Axes3DHelper):
-
+    """
+    Launch a Axes3D with axes labelled from physical units.
+    """
     _subplot_kws = dict(
         subplot_kw=dict(projection='3d'),
         gridspec_kw=dict(top=0.95,
                          left=0.05,
                          right=0.95,
-                         bottom=-0.05)
+                         bottom=0.05)
     )
 
     def get_axes(self):
@@ -138,7 +142,10 @@ class SpatialAxes3D(Axes3DHelper):
 
 
 class OriginInAxes(Origin, SpatialAxes3D):
-    """"""
+    """
+    A mixin that fascilitates locating an object in axes using the `origin`
+    attribute.
+    """
 
     def _label_axes(self, ax, units=(), **kws):
         # units = defaultdict(lambda: get_unit_string(self.origin))

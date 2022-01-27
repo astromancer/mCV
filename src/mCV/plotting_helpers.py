@@ -1,4 +1,6 @@
-
+"""
+Miscellaneous plotting helpers.
+"""
 
 # std
 from fractions import Fraction
