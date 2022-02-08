@@ -13,8 +13,9 @@ class Origin:
     Origin property for locating objects in space.
     """
     
+    _origin = None  # placeholder
+    
     def __init__(self, origin):
-        self._origin = None  # placeholder
         self.origin = origin
 
     @property

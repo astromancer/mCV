@@ -13,15 +13,17 @@ Constrain the inclination for eclipsing systems.
 # don't use their method for a solution, it's a poor way of solving the problem)
 
 
-# from math import sin, cos
+# third-party
 import numpy as np
 from astropy.utils import lazyproperty
+from scipy.misc import derivative
 from scipy.optimize import brentq, minimize
 
-# from math import pi as π
-from scipy.misc import derivative
-
+# relative
 from .roche import RocheSolver, _binary_potential_polar2
+
+
+# from math import pi as π
 
 
 # TODO: 3D (q, i, φ) surface plots!!!
@@ -40,11 +42,11 @@ class InclinationConstraints(RocheSolver):
             # Lagrange point L1
             return self.mu - self.l1.x
 
-        rmax = self.r2 - self.l1.x
-        interval = (1e-6, rmax)
-        # noinspection PyTypeChecker
-        r = brentq(_binary_potential_polar2, *interval, (self.mu, θ, self.psi0))
-        return r
+        # rmax = self.r2.x - self.l1.x
+        interval = (1e-6, self.r2.x - self.l1.x)
+        return brentq(_binary_potential_polar2, 
+                      *interval, 
+                      (self.mu, θ, self.psi0))
 
     def dρdθ(self, θ, dθ=1e-3):
         # note: default spacing dθ=1e-3 is about twentieth of a degree
@@ -124,7 +126,7 @@ if __name__ == '__main__':
     # as you will see from the resulting figure. Below we use the same
     # symbols in the source code as in the paper for maximal clarity.
 
-    from graphical.imagine import ImageDisplay
+    from scrawl.imagine import ImageDisplay
 
 
     def 𝜓(r, θ, 𝜙, q):
@@ -143,8 +145,7 @@ if __name__ == '__main__':
 
     def solve_l1(q):
         """Solve for the inner Lagrange point given q"""
-        result = brentq(_lagrange_solver, 0.01, 0.9, q)
-        return result
+        return brentq(_lagrange_solver, 0.01, 0.9, q)
 
 
     def Ω(q):

@@ -51,7 +51,7 @@ class CompactBinaryStar(ForwardParameters, Axes3DHelper):
 class CataclysmicVariable(CompactBinaryStar):
     Primary = WhiteDwarf
 
-    def __init__(self, q=None,  m=None,  m1=None, m2=None, a=None, P=None, **kws):
+    def __init__(self, q=None, m=None, m1=None, m2=None, a=None, P=None, **kws):
         super().__init__(q, m, m1, m2, a, P)
 
         # create white dwarf object
@@ -60,7 +60,7 @@ class CataclysmicVariable(CompactBinaryStar):
         if (u := getattr(self.roche.u.a, 'unit')):
             self.wd.radius = self.wd.radius.to(u)
             self.wd.centre = self.wd.centre.to(u)
-            
+
         # self.stream = None
         # self.secondary = RedDwarf(m2)  # TODO: BrownDwarf etc...
 
@@ -74,10 +74,10 @@ class CataclysmicVariable(CompactBinaryStar):
         u = getattr(self.roche.u.a, 'unit')
         if u is None:
             return
-        
+
         self.wd.radius = self.wd.radius.to(u)
         self.wd.centre = self.wd.centre.to(u)
-        
+
         if isinstance(self.wd, MagneticWhiteDwarf):
             self.wd.B.origin = self.wd.B.origin.to(u)
 
@@ -85,7 +85,7 @@ class CataclysmicVariable(CompactBinaryStar):
         return '\n'.join([
             self.roche.u.pformat(),
             self.wd.pformat(),
-            f"{' '* 22} = {(self.wd.R / self.a).si:.5f} a"
+            f"{' ' * 22} = {(self.wd.R / self.a).si:.5f} a"
         ])
 
     def pprint(self):
@@ -123,10 +123,9 @@ class MagneticCataclysmicVariable(CataclysmicVariable):
 
     Primary = MagneticWhiteDwarf
 
-    def __init__(self, q=None, m=None, m1=None, m2=None, a=None, P=None,
-                 Bs=None, Balt=0, Baz=0, Boff=(0, 0, 0)):
-        super().__init__(q, m, m1, m2, a, P,
-                         Bs=Bs, Balt=Balt, Baz=Baz, Boff=Boff)
+    def __init__(self, q=None, m=None, m1=None, m2=None, a=None, P=None, **kws):
+        super().__init__(q, m, m1, m2, a, P, **kws)
+
         if (u := getattr(self.a, 'unit')):
             self.wd.B.origin = self.wd.centre.to(u)
 
