@@ -77,14 +77,13 @@ def zaxis_cmap(ax, zrange=(), nseg=50, cmap=None):
     return l
 
 
-class Axes3DHelper:
+class AxesHelper:
     """
     Launch a figure with 3D axes on demand.
     """
 
     _cid = None
-
-    _subplot_kws = {'subplot_kw': dict(projection='3d')}
+    _subplot_kws = {}
 
     @lazyproperty
     def axes(self):
@@ -98,15 +97,28 @@ class Axes3DHelper:
         return ax
 
     def _on_first_draw(self, _event):
-        # have to draw rectangle inset lines after first draw else they point
-        # to wrong locations on the edges of the lower axes
-        fix_axes_offset_text(self.axes)
 
         # disconnect so this only runs once
         self.axes.figure.canvas.mpl_disconnect(self._cid)
 
-    def _label_axes(self, ax, units=(), **kws):
-        raise NotImplementedError
+    def _label_axes(self, ax, units=(), default_unit='', **kws):
+        if not isinstance(units, dict):
+            units = dict(units)
+
+        kws = {**dict(usetex=True, labelpad=10), **kws}
+        xyz = 'xyz'[-isinstance(self, Axes3DHelper)]
+
+        for xyz in 'xyz':
+            label = get_axis_label(xyz, units.get(xyz), default_unit)
+            getattr(ax, f'set_{xyz}label')(label, **kws)
+
+
+class Axes3DHelper(AxesHelper):
+    _subplot_kws = {'subplot_kw': dict(projection='3d')}
+
+    def _on_first_draw(self, _event):
+        fix_axes_offset_text(self.axes)
+        super()._on_first_draw(_event)
 
 
 class SpatialAxes3D(Axes3DHelper):
@@ -126,14 +138,14 @@ class SpatialAxes3D(Axes3DHelper):
         ax.set_box_aspect((1, 1, 1))
         return ax
 
-    def _label_axes(self, ax, units=(), default_unit='', **kws):
-        if not isinstance(units, dict):
-            units = dict(units)
+    # def _label_axes(self, ax, units=(), default_unit='', **kws):
+    #     if not isinstance(units, dict):
+    #         units = dict(units)
 
-        kws = {**dict(usetex=True, labelpad=10), **kws}
-        for xyz in 'xyz':
-            label = get_axis_label(xyz, units.get(xyz), default_unit)
-            getattr(ax, f'set_{xyz}label')(label, **kws)
+    #     kws = {**dict(usetex=True, labelpad=10), **kws}
+    #     for xyz in 'xyz':
+    #         label = get_axis_label(xyz, units.get(xyz), default_unit)
+    #         getattr(ax, f'set_{xyz}label')(label, **kws)
 
     def _on_first_draw(self, _event):
         super()._on_first_draw(_event)
@@ -141,7 +153,7 @@ class SpatialAxes3D(Axes3DHelper):
         # print('PING!')
 
 
-class OriginInAxes(Origin, SpatialAxes3D):
+class OriginLabelledAxes(Origin, SpatialAxes3D):
     """
     A mixin that fascilitates locating an object in axes using the `origin`
     attribute.
