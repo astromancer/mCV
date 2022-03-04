@@ -8,9 +8,10 @@ from fractions import Fraction
 # third-party
 import numpy as np
 from astropy import units as u
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from matplotlib.ticker import FuncFormatter
 from matplotlib.collections import LineCollection
+from mpl_toolkits.mplot3d.axes3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 # local
 from recipes.array import fold
@@ -63,12 +64,13 @@ def theta_tickmarks(ax, n=None, direction='inout', length=0.02, width=0.72,
         n = len(ax.xaxis.get_majorticklocs()) + 1
     
     
-    tick = ax.get_rmax() + length * np.array(d)
+    tick = 1 + length * np.array(d)
+    transform = ax.get_xaxis_transform()
     for t in np.linspace(0, 2 * np.pi, n):
-        ax.plot([t, t], tick, lw=width, color=color, clip_on=False)
+        ax.plot([t, t], tick, lw=width, color=color, clip_on=False, 
+                transform=transform)
 
 # ---------------------------------------------------------------------------- #
-from mpl_toolkits.mplot3d.axes3d import Axes3D
 
 def plot_line_cmap(ax, x, cbar=True, **kws):
     # colorline
