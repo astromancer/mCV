@@ -17,6 +17,7 @@ from matplotlib.patches import Circle
 from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import Affine2D
 from matplotlib.collections import LineCollection
+from matplotlib.projections.polar import PolarAxes
 from loguru import logger
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from astropy import units as u
@@ -32,13 +33,13 @@ from scipy.special import factorial, lpmn, lpmv
 from scrawl.dualaxes import DualAxes
 from recipes import op
 from recipes.array.fold import fold
-from recipes.functionals import raises
 from recipes.string import named_items
 from recipes.oo.temp import temporarily
+from recipes.functionals import echo0, raises
 from recipes.dicts import pformat as pformat_dict
-from recipes.transforms import cart2sph, pol2cart, sph2cart
 from recipes.transforms.rotation import EulerRodriguesMatrix
 from recipes.oo.property import ForwardProperty, lazyproperty
+from recipes.transforms import cart2pol, cart2sph, pol2cart, sph2cart
 
 # relative
 from .roche import ARTIST_PROPS_3D, Ro
@@ -47,9 +48,6 @@ from .axes_helpers import (AxesHelper, OriginLabelledAxes, SpatialAxes3D,
                            get_axis_label)
 from .plotting_helpers import (pi_radian_formatter, theta_tickmarks,
                                x10_formatter, plot_line_cmap as colorline)
-
-
-# from astropy.utils.decorators import lazyproperty
 
 
 # ---------------------------------------------------------------------------- #
@@ -64,20 +62,21 @@ DIPOLE_MOMENT_DEFAULT = 1 * JoulePerTesla
 ORIGIN_DEFAULT = (0, 0, 0) * Ro
 BASE_RESOLUTION = 50
 
-NAMED_MULTIPOLE_ORDERS = {
-    # monopole
-    'dipole':               1,
-    'quadrupole':           2,
-    'sextupole':            3,
-    # 'hexapole':             3,
-    'octupole':             4,
-    'decapole':             5,
-    # 'sedecapole':           16,
-    # 'dotriacontapole':      32,
-    # 'triacontadipole':      32,
-    # 'tetrahexacontapole':   64,
-    # 'hexacontatetrapole':   64
+MULTIPOLE_NAMES = {
+    # 0: monopole
+    1: 'dipole',
+    2: 'quadrupole',
+    3: 'sextupole',
+    4: 'octupole',
+    5: 'decapole'
 }
+
+# 'hexapole':             3,
+# 'sedecapole':           16,
+# 'dotriacontapole':      32,
+# 'triacontadipole':      32,
+# 'tetrahexacontapole':   64,
+# 'hexacontatetrapole':   64
 
 
 # "... toroidal moments and the corresponding fields of toroidal multipoles do
@@ -191,7 +190,7 @@ def _alf1_zeros(l):
     Zeros of the associated Legendre function of degree l and order 1.
     """
     # we know there is a zero at 0 if l is even
-    zeros = [1, *([0] * ((l % 2) == 0))]
+    zeros = [1, *([0] * even(l))]
     if l <= 2:
         return np.sort(zeros)
 
@@ -328,7 +327,7 @@ def setup_2d_axes_polar(ax):
     return ax
 
 
-def get_2d_axes_polar():
+def get_axes_polar():
     fig, ax = plt.subplots(subplot_kw=dict(projection='polar'))
     return setup_2d_axes_polar(ax)
 
@@ -366,6 +365,24 @@ def plot_fieldline_cart(self, ax=None, res=100):
     ax.vlines(self.theta_max, -3, 3, '0.7')
     ax.plot(self.θmax, self.rmax, '*')  # ,  color=line.get_color())
     ax.plot(zeros, self.r(zeros), 'ks')
+
+
+def plot_lines_polar(ax, segments, **kws):
+
+    ax = ax or get_axes_polar()
+    assert isinstance(ax, PolarAxes)
+
+    # Have to set the transform explicitly for line collection in polar axes
+    # transform=ax.transData._b <- doesn't account for theta offset rotation
+    art = LineCollection(
+        segments,
+        transform=(Affine2D().rotate(ax._theta_offset.get_matrix()[0, 2]) +
+                   ax.transProjectionAffine +
+                   ax.transAxes),
+        **kws
+    )
+    ax.add_collection(art)
+    return art
 
 
 def plot2d_multipoles(n, nrows=None, ncols=2, multipole=None, magnitude=1,
@@ -495,6 +512,9 @@ class RotationMixin:
 # ---------------------------------------------------------------------------- #
 class DegreeProperty:
 
+    def __repr__(self):
+        return f'{self.__class__.__name__}({self.degree})'
+
     @property
     def degree(self):
         return self._degree
@@ -509,8 +529,7 @@ class DegreeProperty:
     def _set_degree(self, degree):
         if degree < 1:
             raise ValueError(f'Degree of magnetic multipole field must be '
-                             f'greater than 0. For example:\n'
-                             f'{NAMED_MULTIPOLE_ORDERS}')
+                             f'greater than 0. For example:\n{MULTIPOLE_NAMES}')
 
         self._degree = int(degree)
         # reset lazyproperties
@@ -521,7 +540,7 @@ class DegreeProperty:
     @lazyproperty
     def name(self):
         """Name of the field shape eg: dipole"""
-        return NAMED_MULTIPOLE_ORDERS[self.degree]
+        return MULTIPOLE_NAMES[self.degree]
 
     @lazyproperty
     def odd(self):
@@ -536,20 +555,15 @@ class DegreeProperty:
 #     def __call__(self):
 
 
-class MultipoleFieldLine(DegreeProperty):
+class MultipoleFieldLines(DegreeProperty):
+    # ------------------------------------------------------------------------ #
     def __init__(self, l=1):
         self.degree = l
-
-    def _set_degree(self, degree):
-        super()._set_degree(degree)
-        del self.theta0, self.theta_max
-
-    def __repr__(self):
-        return f'{self.__class__.__name__}({self.degree})'
 
     def __call__(self, θ, φ, rshells=1):
         return self.xyz(θ, φ, rshells)
 
+    # ------------------------------------------------------------------------ #
     def F(self, θ):
         return np.sin(θ) * fnalf1(self.degree, np.cos(θ))
 
@@ -591,6 +605,11 @@ class MultipoleFieldLine(DegreeProperty):
         # convert to Cartesian coordinates. spatial axis at index position 0
         return np.moveaxis(np.asanyarray(sph2cart(r, θ, φ)), 0, -1)
 
+    # ------------------------------------------------------------------------ #
+    def _set_degree(self, degree):
+        super()._set_degree(degree)
+        del self.theta0, self.theta_max
+
     @lazyproperty  # (depends_on=DegreeProperty.degree)
     def theta0(self):
         return read_only(_alf1_theta_zeros(self.degree))
@@ -616,47 +635,116 @@ class MultipoleFieldLine(DegreeProperty):
     def rmax(self):
         return self.r(self.θmax)
 
+    # ------------------------------------------------------------------------ #
+    def get_loop_index(self, theta, wrap=False):
+        wind, remain = divmod(theta, π_2)
+        i = np.digitize(remain, self.theta0) - 1
+        loops, *_ = self._get_index_offset_sign(i)
+        if wrap:
+            return loops
+        return (loops + wind * (self.l // 2)).astype(int)
+
     def _check_theta_in_loop(self, loop, theta, tol=1e-12):
+        assert isinstance(loop, numbers.Integral)
+
+        # (a, b), *_ = self._get_interval_offset_sign(loop)
+        # (a <= theta)
+
         theta = np.asarray(theta)
-        loop = self._resolve_loop_int(loop)
-        a, b = self.theta_intervals[loop]
+        # loops = set(list(self.get_loop_index(theta)))
+
+        # if len(loops) > 1:
+        #     raise ValueError(f'Values span multiple loops: {loops}')
+
+        a, b = self.get_theta_interval(loop)
         if any(l := (theta - a > tol) & (b - theta > tol)):
-            from IPython import embed
-            embed(header="Embedded interpreter at 'src/mCV/bfield.py':617")
             raise ValueError(
                 f'Point (θ={theta[l]}) is outside the interval of loop {loop}: '
                 f'θ ∈ {(a, b)}'
             )
 
-    def get_loop_index(self, θ):
-        """Get index and wind number"""
-        w, θ = np.divmod(np.array(θ), π)
-        index = np.digitize(θ, self.zeros_0_π) - 1
-        return index, w.astype(int)
+    def _get_index_offset_sign(self, loops):
+        squeeze = np.ndarray.item if isinstance(loops, numbers.Integral) else echo0
 
-    def fold_loop_index(self, loop):
-        # loop = self._resolve_loop_int(loop)
-        loop = int(loop)
+        loops = np.array(loops, int, ndmin=1)
+        w, loops = np.divmod(loops, self.l)
+        offsets = w * π
+        signs = np.ones_like(loops)
+
+        #
         l2 = (self.l // 2)
-        if (δ := l2 - loop) <= 0:
-            return (δ - 1 - self.even) % (l2 + 1)
-        return loop
+        if self.odd and (b := (loops == l2)).any():
+            loops[b] = l2
+            offsets[b] = w[b] * π
+            # return l2, w * π, 1
+
+        # higher zeros are reflections of lower zeros around θ = π. Wrap
+        # determines whether higher zeros, or their lower order reflection are
+        # returned (wrap=True))
+        if (b := (loops >= l2)).any():
+            # print('fold')# print(f'{i=:}')
+            loops[b] = (l2 - loops[b] - 1 - self.even) % (l2 + 1)
+            offsets[b] += π
+            signs[b] = -1
+
+        return tuple(map(squeeze, (loops, offsets, signs)))
+
+    # def _get_index_offset_sign(self, loop):
+    #     # TODO: get this to work with arrays
+    #     w, loop = divmod(loop, self.l)
+
+    #     # single loop
+    #     l2 = (self.l // 2)
+    #     if self.odd and (loop == l2):
+    #         return l2, w * π, 1
+
+    #     # higher zeros are reflections of lower zeros around θ = π. Wrap
+    #     # determines whether higher zeros, or their lower order reflection are
+    #     # returned (wrap=True))
+    #     if (b := (loop >= l2)):
+    #         # print('fold')# print(f'{i=:}')
+    #         loop = (l2 - loop - 1 - self.even) % (l2 + 1)
+
+    #     d = (1, -1)[int(b)]
+    #     return loop, (w + b) * π, d    # return loops, (w + b) * π, d
+
+    def _get_interval_offset_sign(self, loops):
+        loops, offsets, signs = self._get_index_offset_sign(loops)
+        return self.theta_intervals[loops], offsets, signs
+
+    # def get_loop_index(self, θ):
+    #     """Get index and wind number"""
+    #     w, θ = np.divmod(np.array(θ), π)
+    #     index = np.digitize(θ, self.zeros_0_π) - 1
+    #     return index, w.astype(int)
+
+    # def wrap_loop_index(self, loop):
+    #     # loop = self._resolve_loop_int(loop)
+    #     loop = int(loop)
+    #     l2 = (self.l // 2)
+    #     if (δ := l2 - loop) <= 0:
+    #         return (δ - 1 - self.even) % (l2 + 1)
+    #     return loop
 
     def _resolve_loop_int(self, loop):
-
-        loop = np.array(loop, int, ndmin=1)  # int(loop)
+        loop = int(loop)
         l = self.l
-        if any(b := (loop >= l)):
-            raise ValueError(f'Invalid loop index: {set(loop[b])}. Should be '
-                             f'an integer l < {l}.')
+        if loop >= l:
+            self._raise_invalid_loop_int(loop)
 
         # wrap negative
-        return (loop.squeeze() + l) % l
+        return loop % l
 
     def _resolve_loop(self, loop):
         # which zero in this loop (upper / lower / both)
-        if isinstance(loop, (numbers.Integral, Collection)):
+        if isinstance(loop, numbers.Integral):
             return self._resolve_loop_int(loop)
+
+        if isinstance(loop, Collection):
+            loops = np.array(loop, int, ndmin=1)  #
+            if any(b := (loops >= self.l)):
+                self._raise_invalid_loop_int(set(loops[b]))
+            return loops
 
         if loop is ...:
             return slice(None)
@@ -667,48 +755,142 @@ class MultipoleFieldLine(DegreeProperty):
                              f'integer(s) or slice or ellipsis.')
         return loop
 
-    def get_zeros(self, loop=..., fold=False):
-        # TODO: higher zeros any loop
-        loop = self._resolve_loop(loop)
+    def _raise_invalid_loop_int(self, loop):
+        raise ValueError(f'Invalid loop index: {loop}. Should be an integer '
+                         f'i < {self.l}.')
+
+    def get_zeros(self, loop=..., wrap=False):
+        # higher zeros are reflections of lower zeros around θ = π. Fold
+        # determines whether higher zeros, or their lower reflection are
+        # returned (wrap=True))
 
         # multi loop
         if isinstance(loop, slice):
             return self.zeros_0_π[loop]
 
+        w, loop = np.divmod(loop, self.l)
+        if wrap:
+            w = 0
+
         # single loop
         l2 = (self.l // 2)
         if self.odd and (loop == l2):
-            return ([(θ := self.theta0[-1]), π - θ])
+            return np.array([(θ := self.theta0[-1]), π - θ]) + w * π
 
-        # higher zeros are reflections of lower zeros around θ = π. Fold
-        # determines whether higher zeros, or their lower reflection are
-        # returned (fold=True))
-        i = loop
+        # higher zeros are reflections of lower zeros around θ = π. Wrap
+        # determines whether higher zeros, or their lower order reflection are
+        # returned (wrap=True))
         if (b := (loop >= l2)):
             # print('fold')# print(f'{i=:}')
-            i = (l2 - loop - 1 - self.even) % (l2 + 1)
-            b = not fold
+            loop = (l2 - loop - 1 - self.even) % (l2 + 1)
+            b = not wrap
 
         d = (1, -1)[int(b)]
-        return b * π + d * self.theta0[i:(i+2 or None)][::d]
+        return (w + b) * π + d * self.theta0[loop:(loop+2 or None)][::d]
 
-    def split_interval_by_loop(self, interval, reflect=True):  # TODO
-        #
-        start, stop = interval = sorted(interval)
-        (i, j), (iw, jw) = self.get_loop_index(interval)
+    def get_theta_interval(self, loop, wrap=False):
+        assert isinstance(loop, numbers.Integral)
 
-        if ends_on_zero := ((stop % π) in self.zeros_0_π):
-            j -= 1
+        interval, offset, sign = self._get_interval_offset_sign(loop)
+        if wrap:
+            return interval
+        return sign * interval[::sign] + offset
 
-        intervals = np.vstack([np.tile(self.theta_intervals, (jw - iw, 1)),
-                               self.theta_intervals[i:(j + 1)]])
-        intervals[0, 0] = start % π
-        intervals[-1, -1] = stop - (jw - ends_on_zero) * π
+    def _split_interval_by_loop(self, interval):
+        nz = self.l // 2
+        begin, end = interval
+        # print(f'{end=:}')
+        iw, i = divmod(begin, π_2)
+        i = np.digitize(i, self.theta0) - 1
+        loop = int(i + iw * nz)
+        # d = -1
+        while True:
+            # get wrapped interval
+            interval, offset, sign = self._get_interval_offset_sign(loop)
+            _, stop = offset + sign * interval[::sign]
 
-        l = self.l
-        loops = np.arange(i + iw * l, j + jw * l + 1)
-        offsets = np.tile(π * np.arange(jw - iw + 1), (l, 1)).T.ravel()
-        return intervals, offsets, loops
+            # print(end, stop, stop - end, (stop - end) < 1e-9, '.'*8)
+
+            if round((d := end - stop), 9) <= 0:
+                # print(f'{end=:}, {interval=:}, {offset=:}, {sign=:}, {d=:}')
+                if sign > 0:
+                    interval = np.array([interval[0], end - offset])
+                else:
+                    interval = np.array([-d, interval[1]])
+                # print(f'{interval=:}')
+
+                yield loop, interval, offset, sign
+                return
+            else:
+                yield loop, interval, offset, sign
+
+            loop += 1
+
+    # def _split_interval_by_loop(self, interval):
+
+    #     nz = self.l // 2
+    #     (iw, jw), (ir, jr) = _, remains = np.divmod(interval, π_2)
+    #     i, j = np.digitize(remains, self.theta0) - 1
+
+    #     # ends_on_zero = (jr in self.theta0[self.odd:])
+    #     ends_on_π_2 = (j == 0 and jr == 0)
+    #     # add1 = ((jr != 0) and self.odd) # (j == 0) and
+
+    #     print(f'{interval=:}\n{remains=:}')
+    #     print(f'{j=:}, {jw=:}, {nz=:}\n{ends_on_π_2=:}') # \n{ends_on_zero=:}
+
+    #     start = int(i + iw * nz)
+    #     # add1 = 1 if self.odd else -int(ends_on_π_2)
+    #     if self.even:
+    #         stop = int(j + jw * nz + 1 -int(ends_on_π_2))
+    #     else:
+    #         x = ((j == 0) and (jr != 0)) + (jw > 2)
+    #         stop = int(j + jw * nz + 1 + x) # - int(ends_on_π_2)
+
+    #     print(f'{start=:} {stop=:}')
+    #     loops = np.arange(start, stop)
+
+    #     intervals, offsets, signs = self._get_interval_offset_sign(loops)
+    #     # intervals = np.array(intervals)
+    #     intervals[0, 0] = ir
+    #     # if jr:
+    #     #     s = signs[-1]
+    #     #     intervals[-1, int(s > 0)] = π_2 * (s < 0) + s * jr
+
+    #     return loops, intervals, offsets, signs
+
+    def split_interval_by_loop(self, interval, wrap=False):
+
+        loops, _intervals, offsets, signs = zip(
+            *self._split_interval_by_loop(interval))
+
+        if wrap:
+            return np.array(loops), np.array(_intervals)
+
+        intervals = np.zeros((len(_intervals), 2))
+        for i, (_, interval, offset, sign) in enumerate(
+                zip(loops, _intervals, offsets, signs)):
+            intervals[i] = sign * interval[::sign] + offset
+
+        return np.array(loops), intervals
+
+    # def split_interval_by_loop(self, interval):
+    #     #
+    #     start, stop = interval = sorted(interval)
+    #     (i, j), (iw, jw) = self.get_loop_index(interval)
+
+    #     if ends_on_zero := ((stop % π) in self.zeros_0_π):
+    #         j -= 1
+
+    #     intervals = np.vstack([np.tile(self.theta_intervals, (jw - iw, 1)),
+    #                            self.theta_intervals[i:(j + 1)]])
+    #     intervals[0, 0] = start % π
+    #     intervals[-1, -1] = stop - (jw - ends_on_zero) * π
+
+    #     l = self.l
+    #     loops = np.arange(i + iw * l, j + jw * l + 1)
+    #     offsets = np.tile(π * np.arange(jw - iw + 1), (l, 1)).T.ravel()
+    #     return intervals, offsets, loops
 
     def get_max(self, loop):
         loop = self._resolve_loop_int(loop)
@@ -720,6 +902,7 @@ class MultipoleFieldLine(DegreeProperty):
         return (b * π + (1, -1)[b] * self.θmax[loop], self.rmax[loop])
         # return self.θmax[loop], self.rmax[loop]
 
+    # ------------------------------------------------------------------------ #
     @lazyproperty
     def arc_lengths(self):
         """Estimate the arc length of all *l* loops"""
@@ -729,7 +912,7 @@ class MultipoleFieldLine(DegreeProperty):
 
     def arc_length(self, a, b):
 
-        intervals, _, loops = self.split_interval_by_loop(a, b)
+        loops, intervals = self.split_interval_by_loop((a, b))
         loops %= self.l
 
         return sum(self._arc_length_single_loop(loops[0], *intervals[0]),
@@ -742,6 +925,12 @@ class MultipoleFieldLine(DegreeProperty):
         intervals = self.theta_intervals[:(self.l // 2 + self.odd)]
         for loop, interval in enumerate(intervals):
             yield self._arc_length_single_loop(loop, *interval)
+
+    def solve_theta_arc_length(self, s, start):
+        # loop, _ = self.get_loop_index(start)
+        # stop = self.zeros_0_π[loop, 1]
+        stop = self.theta_interval[self.get_loop_index(start, wrap=True), 1]
+        return brentq(self._objective_theta_arc_length, start, stop, (start, s))
 
     def _arc_length_single_loop(self, loop, a, b):
 
@@ -769,32 +958,47 @@ class MultipoleFieldLine(DegreeProperty):
         logger.debug('s={} s0={} total={} err={}', s, s0, total, err)
         return direction * total, err
 
-    def solve_theta_arc_length(self, s, start):
-        loop, _ = self.get_loop_index(start)
-        stop = self.zeros_0_π[loop, 1]
-        return brentq(self._objective_theta_arc_length, start, stop, (start, s))
-
     def _objective_theta_arc_length(self, b, a, s, **kws):
         # solve for theta that is Δs distance from a
         return quad(self.ds, a, b, **kws)[0] - s
+
+    # ------------------------------------------------------------------------ #
+    def solve_theta(self, r, xtol=1e-15):
+        assert isinstance(r, numbers.Real)
+        return np.fromiter(self._solve_theta(r, xtol), float)
+
+    def _solve_theta(self, r, xtol=1e-15):
+        for loop in range(self.l):
+            yield from self._solve_theta_loop(r, loop, xtol=xtol)
+
+    def solve_theta_loop(self, r, loop, i=..., xtol=1e-15):
+
+        assert isinstance(loop, numbers.Integral)
+        #
+        w, loop = divmod(loop, self.l)
+        #loop = self._resolve_loop_int(loop)
+
+        unpack = next if isinstance(i, numbers.Integral) else tuple
+        return unpack(w * π + θ for θ in self._solve_theta_loop(r, loop, i, xtol))
 
     def _solve_theta_loop(self, r, loop, i=...,  xtol=1e-15):
 
         # logger.debug('Solving r={:.3f} for loop {:d}', r, loop)
 
         if r == 0:
-            loop = self.fold_loop_index(loop)
-            yield self.theta0[loop:(loop + (2 if (i is ...) else i + 1))]
+            yield self.get_zeros(loop)[i]
+            # yield self.theta0[loop:(loop + (2 if (i is ...) else i + 1))]
             return
-
-        #
-        loop = self._resolve_loop_int(loop)
 
         # get maximum point for loop
         θmax, rmax = self.get_max(loop)
 
+        # check which loops are intersected
+        if r > rmax:
+            raise ValueError(f'No intersections for r = {r} > rmax = {rmax}')
+
         # intersection: which zero in this loop (upper / lower / both)
-        i = _resolve_intersection_index(i)
+        i = _resolve_intersection_index(i)  # a slice!
 
         # touch point (single point intersection)
         if (r == rmax):
@@ -802,7 +1006,7 @@ class MultipoleFieldLine(DegreeProperty):
             return
 
         l = self.l
-        θ0, θ1 = self.get_zeros(loop)
+        θ0, θ1 = self.get_zeros(loop, wrap=True)
         for interval in [(θ0, θmax), (θmax, θ1)][i]:
             if r ** l < xtol:
                 warnings.warn(f'Attempting to solve for r(θ) = {r} in interval'
@@ -810,18 +1014,7 @@ class MultipoleFieldLine(DegreeProperty):
                               f'these results are not gauranteed.')
             yield brentq(_angle_solver_F, *interval, (l, r ** l), xtol=xtol)
 
-    def solve_theta_loop(self, r, loop, i=..., xtol=1e-15):
-        unpack = next if isinstance(i, numbers.Integral) else tuple
-        return unpack(self._solve_theta_loop(r, loop, i, xtol))
-
-    def _solve_theta(self, r, xtol=1e-15):
-        for loop in range(self.l):
-            yield from self._solve_theta_loop(r, loop, xtol=xtol)
-
-    def solve_theta(self, r, xtol=1e-15):
-        assert isinstance(r, numbers.Real)
-        return np.fromiter(self._solve_theta(r, xtol), float)
-
+    # ------------------------------------------------------------------------ #
     def get_theta_r(self, interval=(0, _2π), rshells=1, res=100, reflect=True):
         θ, r = np.hstack(list(self._get_theta_r(interval, res, reflect)))
         θ, r = np.broadcast_arrays(θ, r * np.array(rshells, ndmin=θ.ndim + 1).T)
@@ -830,48 +1023,74 @@ class MultipoleFieldLine(DegreeProperty):
     def _get_theta_r(self, interval, res=100, reflect=True):
 
         # split interval by loop
-        intervals, offsets, loops = self.split_interval_by_loop(interval, reflect)
-
-        loops %= self.l
         res //= self.l
-        for loop, interval, offset in zip(loops, intervals, offsets):
+        for loop, interval in zip(*self.split_interval_by_loop(interval)):
             # convert interval to tuple so we can cache
-            θ, r = self.get_theta_r_loop(loop, tuple(interval), res)
-            yield θ + offset, r
+            yield self.get_theta_r_loop(loop, interval, res)
+            
 
-    @ftl.lru_cache()  # FIXME use recipes.cache
-    def get_theta_r_loop(self, loop, interval, res=100):
+    def get_theta_r_loop(self, loop, interval=None, res=100):
         """
-        Theta vector with non-linear step size which are approximately linearly 
-        spaced along field line arc length.
+        Coordinate vectors (θ, r) (colatitude, radius) with non-linear step size
+        in colatitude that produces approximately linearly spaced steps along
+        the field line arc. Useful for approximating the arc length integral, as
+        well as for producing good looking plots with well sampled field lines.
 
         Parameters
         ----------
         loop : int
             The loop number
         start : float, optional
-            Interval start value θ (infimum), by default None
-        stop : float, optional
-            Interval end point (supremum) θ, by default None
+            Colatitude interval θ, by default None
         res : int, optional
             Approximate resolution, by default 100
-
 
         Returns
         -------
         np.ndarray
             Theta sequence
         """
-        loop = self._resolve_loop_int(loop)
+        logger.debug('Calculating coordinate vectors for loop {}, interval {}',
+                     loop, interval)
+
+        _loop, offset, sign = self._get_index_offset_sign(loop)
 
         if interval is None:
-            interval = self.theta_intervals[loop]
+            interval = self.theta_intervals[_loop]
         else:
             self._check_theta_in_loop(loop, interval)
 
-        return self._get_theta_r_loop(loop, interval, res)
+            interval = sign * (interval[::sign] - offset)
+            logger.debug('Folded interval {}', interval)
 
+        # loop = _loop
+        if self.odd and (_loop == self.l // 2):
+            # optimization: reflect array around π since solutions are the same
+            start, stop = interval
+            if stop > π_2:
+                logger.debug('Folding around π/2: {} -> {}', interval, (start, π_2))
+                θ, r = self._get_theta_r_loop(_loop, (start, π_2), res)
+
+                i = np.digitize(π - stop, θ) - 1
+                θ, r = (np.hstack([θ, π - θ[-2:i:-1], stop]),
+                        np.hstack([r, r[-2:i:-1], self.r(stop)]))
+            else:
+                θ, r = self._get_theta_r_loop(_loop, tuple(interval), res)
+        else:
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("error")
+                θ, r = self._get_theta_r_loop(_loop, tuple(interval), res)
+
+        # logger.debug('offset {} sign {}, θ {}', offset, sign, θ[[0, -1]])
+        return offset + sign * θ[::sign], r[::sign]
+
+    @ftl.lru_cache()  # TODO use recipes.caching.Cached
     def _get_theta_r_loop(self, loop, interval, res=100):
+        assert loop <= self.l // 2
+
+        logger.debug('Calculating coordinate vectors for loop {}, interval {}',
+                     loop, interval)
 
         # for dipole, linearly spaced θ works well
         if self.l == 1:
@@ -887,13 +1106,8 @@ class MultipoleFieldLine(DegreeProperty):
         θ0, r0 = self._theta_series0(loop, start, ds, 0)
         θ1 = self._theta_series1(θ0[-1] if θ0 else start, middle, ds)
 
-        if self.odd and (loop == self.l // 2):
-            # optimization: reflect array around π since solutions are the same
-            θ3, r3 = π - np.array(θ0[::-1]), r0[::-1]
-            θ2 = π - np.array(θ1[::-1])
-        else:
-            θ3, r3 = self._theta_series0(loop, stop, ds, 1)
-            θ2 = self._theta_series1(θ3[0] if θ3 else stop, middle, ds)
+        θ3, r3 = self._theta_series0(loop, stop, ds, 1)
+        θ2 = self._theta_series1(θ3[0] if θ3 else stop, middle, ds)
 
         return (np.hstack([θ0, θ1[1:],          θ2,         θ3[1:]]),
                 np.hstack([r0, self.r(θ1)[1:],  self.r(θ2), r3[1:]]))
@@ -950,6 +1164,7 @@ class MultipoleFieldLine(DegreeProperty):
 
         return theta[::direction]
 
+    # ------------------------------------------------------------------------ #
     def plot_r_cart(self, ax=None,  interval=(0, _2π), res=100):
 
         if ax is None:
@@ -994,9 +1209,15 @@ class MultipoleFieldLine(DegreeProperty):
 
     def _get_plot_vectors_xy(self, interval, rshells=1, res=None, bbox=None):
 
-        vectors = self._get_plot_coords_polar(interval, rshells, res, bbox)
-        return np.array([np.moveaxis(pol2cart(*v[::-1]), 0, -1)
-                         for v in vectors.ravel()], object)
+        θ_r = self._get_plot_coords_polar(interval, rshells, res, bbox)
+        # (shells, loops) (colatitude, spatial dimension)
+        xy = np.empty(θ_r.shape, object)
+        for (i, j), (θ, r) in np.ndenumerate(θ_r):
+            xy[i, j] = np.moveaxis(pol2cart(r, θ), 0, -1)
+
+        return xy
+        # return np.array([np.moveaxis(pol2cart(*v[::-1]), 0, -1)
+        #                  for v in vectors.ravel()], object)
 
     def _get_plot_vectors_xyz(self, interval, phi=0, rshells=1, res=None, bbox=None):
 
@@ -1021,23 +1242,10 @@ class MultipoleFieldLine(DegreeProperty):
         rshells = np.array(rshells, ndmin=1)
 
         # get axes
-        ax = ax or get_2d_axes_polar()
+        ax = ax or get_axes_polar()
 
-        # xy = self._get_plot_coords_polar(interval, rshells, res, bbox)
-        # for xy in xy.ravel():
-        #     line, = ax.plot(*xy, 'x', ls='-')
-        # return line
-
-        # Have to set the transform explicitly for line collection in polar axes
-        # transform=ax.transData._b <- doesn't account for theta offset rotation
-        art = LineCollection(
-            self._get_plot_vectors_xy(interval, rshells, res, bbox),
-            transform=(Affine2D().rotate(ax._theta_offset.get_matrix()[0, 2]) +
-                       ax.transProjectionAffine +
-                       ax.transAxes),
-            **kws
-        )
-        ax.add_collection(art)
+        segments = self._get_plot_vectors_xy(interval, rshells, res, bbox).ravel()
+        art = plot_lines_polar(ax,  segments, **kws)
 
         ax.set_rlim(0, 1.025 * rshells.max() * self.rmax.max())
         # ax.autoscale_view()
@@ -1059,16 +1267,15 @@ class MultipoleFieldLine(DegreeProperty):
         rshells = np.arange(1, nshells + 1)
 
         fieldlines = self._get_plot_vectors_xyz(interval, phi, rshells, res, bbox)
-        # fieldlines = fieldlines.ravel()  
+        # fieldlines = fieldlines.ravel()
 
-        
         art = Line3DCollection(fieldlines.ravel(), **kws)
         ax = ax or SpatialAxes3D().axes
         ax.add_collection3d(art)
-        
+
         # ax.auto_scale_xyz(*fieldlines[-1, -1, 0].T)
         # ax.auto_scale_xyz(*get_value(fieldlines).T)
-        
+
         d = nshells * self.rmax.max()
         lim = [-d, d]
         ax.set(xlim=lim, ylim=lim, zlim=lim)
@@ -1077,10 +1284,10 @@ class MultipoleFieldLine(DegreeProperty):
 
 
 # alias
-MultipoleFieldline = MultipoleFieldLine
+MultipoleFieldlines = MultipoleFieldLines
 
 
-class PhysicalMultipoleFieldLine(MultipoleFieldLine):
+class PhysicalMultipoleFieldLines(MultipoleFieldLines):
     def __init__(self, l, radius):  # TODO: origin
         super().__init__(l)
         self.radius = radius
@@ -1111,17 +1318,21 @@ class PhysicalMultipoleFieldLine(MultipoleFieldLine):
 
     @property
     def radius(self):
+        """Reference radius. Field is undefined inside this radius."""
         return self._radius
 
     @radius.setter
     def radius(self, radius):
-        """Reference radius"""
         assert radius >= 0
         self._radius = radius
 
         del self.theta_intervals
 
     rmin = radius
+
+    # @lazyproperty  # (depends_on=radius)
+    # def theta0(self):
+    #     return read_only(self.solve_theta(self.radius)))
 
     @lazyproperty  # (depends_on=radius)
     def theta_intervals(self):
@@ -1140,7 +1351,7 @@ class PhysicalMultipoleFieldLine(MultipoleFieldLine):
 
     #     return super().get_loop_index(θ)
 
-    def get_theta_r(self, interval=None,  rshells=1, res=100, reflect=True):
+    def get_theta_r(self, interval=None, rshells=1, res=100, reflect=True):
         # changing parameter defaults
         if interval is None:
             interval = ((start := self.theta_intervals[0, 0]), _2π - start)
@@ -1213,7 +1424,7 @@ class PhysicalMultipoleFieldLine(MultipoleFieldLine):
         return line, circle
 
 
-PhysicalMultipoleFieldline = PhysicalMultipoleFieldLine
+PhysicalMultipoleFieldlines = PhysicalMultipoleFieldLines
 
 
 class MagneticFlux:
@@ -1241,7 +1452,7 @@ class MagneticFlux:
         return np.linalg.norm(self.B(xyz), axis=-1)
 
 
-class IdealMultipole(MagneticFlux):
+class IdealMultipole(MagneticFlux, DegreeProperty):
     """
     Pure axissymetric dipole / quadrupole / octupole etc
     """
@@ -1249,10 +1460,7 @@ class IdealMultipole(MagneticFlux):
     degree = ForwardProperty('fieldlines.degree')
 
     def __init__(self, degree=1):
-        self.fieldlines = MultipoleFieldLine(degree)
-        # self.degree = ForwardProperty(self.fieldlines, 'degree')
-
-    # def _set_degree(self, degree):
+        self.fieldlines = MultipoleFieldLines(degree)
 
     # ------------------------------------------------------------------------ #
     # @default_units(xyz=u.dimensionless_unscaled)  # convert to quantity
@@ -1300,103 +1508,120 @@ class IdealMultipole(MagneticFlux):
         # B[1] = Bθ = c * lpmv(0, l + 1, cosθ) - Br * cosθ
         return B
 
-    def fieldlines(self, nshells=3, naz=5, res=100, bbox=None, rmin=0.,
-                   scale=1):
-        """
-        Compute the field lines for a pure multipole magnetic field.
+    # def fieldlines(self, nshells=3, naz=5, res=100, bbox=None, rmin=0.,
+    #                scale=1):
+    #     """
+    #     Compute the field lines for a pure multipole magnetic field.
 
-        Parameters
-        ----------
-        nshells : int, optional
-            Number of concentric magnetic shells for which to compute field
-            lines, by default 3
-        naz : int, optional
-            Number of azimuthal panels for which to draw field lines, by default
-            5.
-        res : int, optional
-            Number of points on each field line, by default 100.
-        scale : float, optional
-            Scaling factor, by default 1.
-        bbox : int, optional
-            [description], by default 0
-        rmin : float, optional
-            Terminating inner radius for field lines, by default 0.
+    #     Parameters
+    #     ----------
+    #     nshells : int, optional
+    #         Number of concentric magnetic shells for which to compute field
+    #         lines, by default 3
+    #     naz : int, optional
+    #         Number of azimuthal panels for which to draw field lines, by default
+    #         5.
+    #     res : int, optional
+    #         Number of points on each field line, by default 100.
+    #     scale : float, optional
+    #         Scaling factor, by default 1.
+    #     bbox : int, optional
+    #         [description], by default 0
+    #     rmin : float, optional
+    #         Terminating inner radius for field lines, by default 0.
 
-        Examples
-        --------
-        >>>
+    #     Examples
+    #     --------
+    #     >>>
 
-        Returns
-        -------
-        np.ndarray shape: (nshells, res * naz, 3)
-            Cartesian coordiantes of the field lines.
-        """
-        shells = np.arange(1, nshells + 1) * scale
-        fieldlines = self._fieldlines(shells, naz, res, bbox, rmin)
+    #     Returns
+    #     -------
+    #     np.ndarray shape: (nshells, res * naz, 3)
+    #         Cartesian coordiantes of the field lines.
+    #     """
+    #     shells = np.arange(1, nshells + 1) * scale
+    #     fieldlines = self._fieldlines(shells, naz, res, bbox, rmin)
 
-        # apply default spatial units
-        fieldlines, flux_density = self._apply_default_spatial_units(fieldlines)
+    #     # apply default spatial units
+    #     fieldlines, flux_density = self._apply_default_spatial_units(fieldlines)
 
-        # shift to origin
-        fieldlines += self.origin.T
+    #     # shift to origin
+    #     fieldlines += self.origin.T
 
-        return fieldlines, flux_density
+    #     return fieldlines, flux_density
 
-    def _fieldlines(self, shells, naz=5, res=100, bbox=None, rmin=0.):
+    # def _fieldlines(self, shells, naz=5, res=100, bbox=None, rmin=0.):
 
-        shells = np.atleast_1d(shells).ravel()
-        nshells = shells.size
-        if isinstance(rmin, u.Quantity):
-            rmin = rmin.to(self.origin.unit).value
+    #     shells = np.atleast_1d(shells).ravel()
+    #     nshells = shells.size
+    #     if isinstance(rmin, u.Quantity):
+    #         rmin = rmin.to(self.origin.unit).value
 
-        # radial profile of magnetcic field lines
-        θ = self.get_theta_fieldline()
-        φ = np.linspace(0, _2π, naz, endpoint=False)[None].T
-        # self.surface_theta = []
-        if rmin > 0:
-            fieldlines = np.empty((nshells, naz, res, 3))
-            flux_density = np.empty((nshells, naz, res))
-            for i, shell in enumerate(shells):
-                # surface intersection
+    #     # radial profile of magnetcic field lines
+    #     θ = self.get_theta_fieldline()
+    #     φ = np.linspace(0, _2π, naz, endpoint=False)[None].T
+    #     # self.surface_theta = []
+    #     if rmin > 0:
+    #         fieldlines = np.empty((nshells, naz, res, 3))
+    #         flux_density = np.empty((nshells, naz, res))
+    #         for i, shell in enumerate(shells):
+    #             # surface intersection
 
-                theta0 = np.arcsin(np.sqrt(rmin / shell))
-                θ = np.linspace(theta0, π - theta0, res)
-                fieldlines[i] = xyz = shell * self.fieldlines.xyz(θ, φ)
-                # NOTE: since flux density indep of phi, this calculation is not
-                # repeated unnecessarily for different phi here
-                flux_density[i] = b = self.flux_density(xyz[0])
+    #             theta0 = np.arcsin(np.sqrt(rmin / shell))
+    #             θ = np.linspace(theta0, π - theta0, res)
+    #             fieldlines[i] = xyz = shell * self.fieldlines.xyz(θ, φ)
+    #             # NOTE: since flux density indep of phi, this calculation is not
+    #             # repeated unnecessarily for different phi here
+    #             flux_density[i] = b = self.flux_density(xyz[0])
 
-            # TODO: each field line is split into sections so that the
-            # projection zorder gets calculated correctly for all viewing
-            # angles. Fieldlines terminate on star surface. ???
+    #         # Flux density unit
+    #         flux_density *= op.AttrGetter('unit', default=1)(b)
+    #     else:
+    #         # convert to Cartesian coordinates
+    #         line = self.fieldlines.xyz(θ, φ)  # as 3D array
+    #         fieldlines = line * shells[(np.newaxis, ) * line.ndim].T  # .reshape(-1, 3)
+    #         flux_density = self.flux_density(fieldlines)
 
-            # Flux density unit
-            flux_density *= op.AttrGetter('unit', default=1)(b)
-        else:
-            # convert to Cartesian coordinates
-            line = self.fieldlines.xyz(θ, φ)  # as 3D array
-            fieldlines = line * shells[(np.newaxis, ) * line.ndim].T  # .reshape(-1, 3)
-            flux_density = self.flux_density(fieldlines)
+    #     return fieldlines, flux_density
 
-        return fieldlines, flux_density
+    def plot2d(self, ax, interval=(0, _2π), rshells=1, res=100, **kws):  # projection='polar'
+        # TODO: each field line is split into sections so that the projection
+        # zorder gets calculated correctly for all viewing angles. Fieldlines
+        # terminate on star surface. ???
+        if interval is None:
+            interval = self.theta_intervals[[0, -1], [0, 1]]
 
-    def plot2d(self, ax, res=100, **kws):  # projection='polar'
+        if res is None:
+            res = BASE_RESOLUTION * self.l
 
-        # TODO: cmap
+        fieldlines = self.fieldlines._get_plot_vectors_xy(interval, rshells, res)
 
-        # calculate zeros of associated Legendre function, so we include those
-        # points in the plotting domain
-        theta = np.sort(np.hstack(get_theta_fieldlines(self.degree)))
-        r = self.r(theta)
+        segments = []
+        array = []
+        for xy in fieldlines.ravel():
+            seg = fold(xy, 2, 1, pad=False)
+            segments.extend(seg)
 
-        # reflect
-        theta = np.hstack([theta, theta + π])
-        r = np.hstack([r, r])
+            array.extend(
+                np.linalg.norm(self.B_sph(*cart2pol(*seg.mean(1).T)), axis=0)
+            )
 
-        line, = ax.plot(theta, r, **kws)
+        art = plot_lines_polar(ax,
+                               segments,
+                               cmap='jet',
+                               array=np.log10(array))
+        ax = art.axes
+
+        # cmap=cmap,
+        #                          array=(array := np.log10(get_value(flux))),
+        #                          clim=(max(np.floor(m := array.min()), m),
+        #                                max(np.ceil(m := array.max()), m))
+
+        # line, = ax.plot(theta, r, **kws)
         # line2, = ax.plot(theta + π, r, **kws)
         # ax.plot(theta, lpmv(1, l, np.cos(theta)))
-        return line  # , line2
+        ax.set_rlim(0, 1.025 * np.array(rshells).max() * self.fieldlines.rmax.max())
+        return art  # , line2
 
     # alias
     plot2D = plot2d
