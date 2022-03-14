@@ -40,6 +40,7 @@ from recipes.dicts import pformat as pformat_dict
 from recipes.transforms.rotation import EulerRodriguesMatrix
 from recipes.oo.property import ForwardProperty, lazyproperty
 from recipes.transforms import cart2pol, cart2sph, pol2cart, sph2cart
+from recipes.dicts import AttrDict, invert
 
 # relative
 from .roche import ARTIST_PROPS_3D, Ro
@@ -51,16 +52,17 @@ from .plotting_helpers import (pi_radian_formatter, theta_tickmarks,
 
 
 # ---------------------------------------------------------------------------- #
+# Module variables
 π = np.pi
 _2π = 2 * π
 _4π = 4 * π
 π_2 = π / 2
 μ0_2π = mu0 / _2π
 
+
 JoulePerTesla = u.J / u. T
 DIPOLE_MOMENT_DEFAULT = 1 * JoulePerTesla
 ORIGIN_DEFAULT = (0, 0, 0) * Ro
-BASE_RESOLUTION = 50
 
 MULTIPOLE_NAMES = {
     # 0: monopole
@@ -68,15 +70,34 @@ MULTIPOLE_NAMES = {
     2: 'quadrupole',
     3: 'sextupole',
     4: 'octupole',
-    5: 'decapole'
+    5: 'decapole',
+    6: 'dodecapole',
+    7: 'quadecapole',
+    8: 'sedecapole',
+    9: 'octadecapole',
+    10: 'icosapole'
+
+}
+MULTIPOLE_DEGREES = {
+    **invert(MULTIPOLE_NAMES),
+    # alternate names
+    'hexapole':     3,
+    'sexadecapole': 8
 }
 
-# 'hexapole':             3,
-# 'sedecapole':           16,
-# 'dotriacontapole':      32,
-# 'triacontadipole':      32,
-# 'tetrahexacontapole':   64,
-# 'hexacontatetrapole':   64
+# 'dotriacontapole':      16,
+# 'triacontadipole':      16,
+# 'tetrahexacontapole':   32,
+# 'hexacontatetrapole':   32
+
+# ---------------------------------------------------------------------------- #
+# Default parameters configuration
+
+CONFIG = AttrDict(
+    points_per_loop=50,
+    loops_per_azimuth=4,
+    rshells=1
+)
 
 
 # "... toroidal moments and the corresponding fields of toroidal multipoles do
@@ -332,7 +353,7 @@ def get_axes_polar():
     return setup_2d_axes_polar(ax)
 
 
-def plot_fieldline_cart(self, ax=None, res=100):
+def plot_fieldline_cart(self, ax=None, res=CONFIG.points_per_loop):
 
     if ax is None:
         fig = plt.figure()
@@ -560,7 +581,7 @@ class MultipoleFieldLines(DegreeProperty):
     def __init__(self, l=1):
         self.degree = l
 
-    def __call__(self, θ, φ, rshells=1):
+    def __call__(self, θ, φ, rshells=CONFIG.rshells):
         return self.xyz(θ, φ, rshells)
 
     # ------------------------------------------------------------------------ #
@@ -590,7 +611,7 @@ class MultipoleFieldLines(DegreeProperty):
         # return (f := np.abs(F(θ, l))) ** (1 / l) * np.sqrt(1 + (dF(θ, l) / (l * f)) ** 2)
         # return self.r(θ) * np.sqrt(1 + 2 * (1 + 1/l) * (fnalf(l, 0, cosθ) / fnalf1(l, cosθ)) ** 2)
 
-    def xyz(self, θ, φ, rshells=1):
+    def xyz(self, θ, φ, rshells=CONFIG.rshells):
         """
         Cartesian distance from origin for axisymmetric field line at
         colatitiude θ and azimuth φ. 
@@ -1019,21 +1040,20 @@ class MultipoleFieldLines(DegreeProperty):
             yield brentq(_angle_solver_F, *interval, (l, r ** l), xtol=xtol)
 
     # ------------------------------------------------------------------------ #
-    def get_theta_r(self, interval=(0, _2π), rshells=1, res=100, reflect=True):
-        θ, r = np.hstack(list(self._get_theta_r(interval, res, reflect)))
+    def get_theta_r(self, interval=(0, _2π), rshells=CONFIG.rshells,
+                    res=CONFIG.points_per_loop):
+        θ, r = np.hstack(list(self._get_theta_r(interval, res)))
         θ, r = np.broadcast_arrays(θ, r * np.array(rshells, ndmin=θ.ndim + 1).T)
         return θ.squeeze(), r.squeeze()
 
-    def _get_theta_r(self, interval, res=100, reflect=True):
+    def _get_theta_r(self, interval, res=CONFIG.points_per_loop):
 
         # split interval by loop
-        res //= self.l
         for loop, interval in zip(*self.split_interval_by_loop(interval)):
             # convert interval to tuple so we can cache
             yield self.get_theta_r_loop(loop, interval, res)
-            
 
-    def get_theta_r_loop(self, loop, interval=None, res=100):
+    def get_theta_r_loop(self, loop, interval=None, res=CONFIG.points_per_loop):
         """
         Coordinate vectors (θ, r) (colatitude, radius) with non-linear step size
         in colatitude that produces approximately linearly spaced steps along
@@ -1090,8 +1110,7 @@ class MultipoleFieldLines(DegreeProperty):
         return offset + sign * θ[::sign], r[::sign]
 
     @ftl.lru_cache()  # TODO use recipes.caching.Cached
-    def _get_theta_r_loop(self, loop, interval, res=100):
-        assert loop <= self.l // 2
+    def _get_theta_r_loop(self, loop, interval, res=CONFIG.points_per_loop):
 
         logger.debug('Calculating coordinate vectors for loop {}, interval {}',
                      loop, interval)
@@ -1169,7 +1188,7 @@ class MultipoleFieldLines(DegreeProperty):
         return theta[::direction]
 
     # ------------------------------------------------------------------------ #
-    def plot_r_cart(self, ax=None,  interval=(0, _2π), res=100):
+    def plot_r_cart(self, ax=None,  interval=(0, _2π), res=CONFIG.points_per_loop):
 
         if ax is None:
             fig = plt.figure()
@@ -1198,8 +1217,8 @@ class MultipoleFieldLines(DegreeProperty):
         ax.plot(self.θmax, self.rmax, '*')  # ,  color=line.get_color())
         ax.plot(zeros, self.r(zeros), 'ks')
 
-    def _get_plot_coords_polar(self, interval, rshells=1, res=None,
-                               bbox=None):
+    def _get_plot_coords_polar(self, interval, rshells=CONFIG.rshells,
+                               res=CONFIG.points_per_loop, bbox=None):
 
         base_coords = list(self._get_theta_r(interval, res))
         rshells = np.array(rshells, ndmin=1)
@@ -1211,7 +1230,8 @@ class MultipoleFieldLines(DegreeProperty):
 
         return coord_vectors
 
-    def _get_plot_vectors_xy(self, interval, rshells=1, res=None, bbox=None):
+    def _get_plot_vectors_xy(self, interval, rshells=CONFIG.rshells,
+                             res=CONFIG.points_per_loop, bbox=None):
 
         θ_r = self._get_plot_coords_polar(interval, rshells, res, bbox)
         # (shells, loops) (colatitude, spatial dimension)
@@ -1220,10 +1240,9 @@ class MultipoleFieldLines(DegreeProperty):
             xy[i, j] = np.moveaxis(pol2cart(r, θ), 0, -1)
 
         return xy
-        # return np.array([np.moveaxis(pol2cart(*v[::-1]), 0, -1)
-        #                  for v in vectors.ravel()], object)
 
-    def _get_plot_vectors_xyz(self, interval, phi=0, rshells=1, res=None, bbox=None):
+    def _get_plot_vectors_xyz(self, interval, phi=0, rshells=CONFIG.rshells,
+                              res=CONFIG.points_per_loop, bbox=None):
 
         φ = np.array(phi, ndmin=2).T
         θ_r = self._get_plot_coords_polar(interval, rshells, res, bbox)
@@ -1236,11 +1255,8 @@ class MultipoleFieldLines(DegreeProperty):
 
         return xyz
 
-    def plot2d(self, ax=None, interval=(0, _2π), rshells=1, res=None,
-               bbox=None, **kws):  # loop=...,
-
-        if res is None:
-            res = BASE_RESOLUTION * self.l
+    def plot2d(self, ax=None, interval=(0, _2π), rshells=CONFIG.rshells,
+               res=CONFIG.points_per_loop, bbox=None, **kws):  # loop=...,
 
         #
         rshells = np.array(rshells, ndmin=1)
@@ -1256,13 +1272,11 @@ class MultipoleFieldLines(DegreeProperty):
 
         return art
 
-    def plot3d(self, ax=None, interval=None, nshells=3, naz=5, res=None, bbox=None, **kws):
+    def plot3d(self, ax=None, interval=None, nshells=3, naz=5,
+               res=CONFIG.points_per_loop, bbox=None, **kws):
 
         if interval is None:
             interval = self.theta_intervals[[0, -1], [0, 1]]
-
-        if res is None:
-            res = BASE_RESOLUTION * self.l
 
         # collate artist graphical properties
         kws = {**ARTIST_PROPS_3D.bfield, **kws}
@@ -1355,7 +1369,8 @@ class PhysicalMultipoleFieldLines(MultipoleFieldLines):
 
     #     return super().get_loop_index(θ)
 
-    def get_theta_r(self, interval=None, rshells=1, res=100, reflect=True):
+    def get_theta_r(self, interval=None, rshells=CONFIG.rshells, res=CONFIG.points_per_loop,
+                    reflect=True):
         # changing parameter defaults
         if interval is None:
             interval = ((start := self.theta_intervals[0, 0]), _2π - start)
@@ -1370,8 +1385,8 @@ class PhysicalMultipoleFieldLines(MultipoleFieldLines):
     #         itt.repeat(([np.nan], [np.nan]))
     #     )
 
-    def _get_plot_coords_polar(self, interval, rshells=1, res=None,
-                               bbox=None):
+    def _get_plot_coords_polar(self, interval, rshells=CONFIG.rshells,
+                               res=CONFIG.points_per_loop, bbox=None):
 
         # first get the base loop coord vectors r, θ
         (i, j), w = self.get_loop_index(interval)
@@ -1408,8 +1423,9 @@ class PhysicalMultipoleFieldLines(MultipoleFieldLines):
 
         return coord_vectors
 
-    def plot2d(self, ax=None, interval=None, rshells=1, res=None,
-               bbox=None, show_r=dict(color='0.5', lw=2, alpha=0.5), **kws):
+    def plot2d(self, ax=None, interval=None, rshells=CONFIG.rshells,
+               res=CONFIG.points_per_loop, bbox=None,
+               show_r=dict(color='0.5', lw=2, alpha=0.5), **kws):
 
         if interval is None:
             interval = (start := self.theta_intervals[0, 0],  _2π - start)
@@ -1512,83 +1528,7 @@ class IdealMultipole(MagneticFlux, DegreeProperty):
         # B[1] = Bθ = c * lpmv(0, l + 1, cosθ) - Br * cosθ
         return B
 
-    # def fieldlines(self, nshells=3, naz=5, res=100, bbox=None, rmin=0.,
-    #                scale=1):
-    #     """
-    #     Compute the field lines for a pure multipole magnetic field.
-
-    #     Parameters
-    #     ----------
-    #     nshells : int, optional
-    #         Number of concentric magnetic shells for which to compute field
-    #         lines, by default 3
-    #     naz : int, optional
-    #         Number of azimuthal panels for which to draw field lines, by default
-    #         5.
-    #     res : int, optional
-    #         Number of points on each field line, by default 100.
-    #     scale : float, optional
-    #         Scaling factor, by default 1.
-    #     bbox : int, optional
-    #         [description], by default 0
-    #     rmin : float, optional
-    #         Terminating inner radius for field lines, by default 0.
-
-    #     Examples
-    #     --------
-    #     >>>
-
-    #     Returns
-    #     -------
-    #     np.ndarray shape: (nshells, res * naz, 3)
-    #         Cartesian coordiantes of the field lines.
-    #     """
-    #     shells = np.arange(1, nshells + 1) * scale
-    #     fieldlines = self._fieldlines(shells, naz, res, bbox, rmin)
-
-    #     # apply default spatial units
-    #     fieldlines, flux_density = self._apply_default_spatial_units(fieldlines)
-
-    #     # shift to origin
-    #     fieldlines += self.origin.T
-
-    #     return fieldlines, flux_density
-
-    # def _fieldlines(self, shells, naz=5, res=100, bbox=None, rmin=0.):
-
-    #     shells = np.atleast_1d(shells).ravel()
-    #     nshells = shells.size
-    #     if isinstance(rmin, u.Quantity):
-    #         rmin = rmin.to(self.origin.unit).value
-
-    #     # radial profile of magnetcic field lines
-    #     θ = self.get_theta_fieldline()
-    #     φ = np.linspace(0, _2π, naz, endpoint=False)[None].T
-    #     # self.surface_theta = []
-    #     if rmin > 0:
-    #         fieldlines = np.empty((nshells, naz, res, 3))
-    #         flux_density = np.empty((nshells, naz, res))
-    #         for i, shell in enumerate(shells):
-    #             # surface intersection
-
-    #             theta0 = np.arcsin(np.sqrt(rmin / shell))
-    #             θ = np.linspace(theta0, π - theta0, res)
-    #             fieldlines[i] = xyz = shell * self.fieldlines.xyz(θ, φ)
-    #             # NOTE: since flux density indep of phi, this calculation is not
-    #             # repeated unnecessarily for different phi here
-    #             flux_density[i] = b = self.flux_density(xyz[0])
-
-    #         # Flux density unit
-    #         flux_density *= op.AttrGetter('unit', default=1)(b)
-    #     else:
-    #         # convert to Cartesian coordinates
-    #         line = self.fieldlines.xyz(θ, φ)  # as 3D array
-    #         fieldlines = line * shells[(np.newaxis, ) * line.ndim].T  # .reshape(-1, 3)
-    #         flux_density = self.flux_density(fieldlines)
-
-    #     return fieldlines, flux_density
-
-    def plot2d(self, ax, interval=(0, _2π), rshells=1, res=100, **kws):  # projection='polar'
+    def plot2d(self, ax, interval=(0, _2π), rshells=CONFIG.rshells, res=CONFIG.points_per_loop, **kws):  # projection='polar'
         # TODO: each field line is split into sections so that the projection
         # zorder gets calculated correctly for all viewing angles. Fieldlines
         # terminate on star surface. ???
