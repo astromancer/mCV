@@ -965,21 +965,25 @@ class MultipoleFieldLines(DegreeProperty):
     # ------------------------------------------------------------------------ #
     def solve_theta(self, r, xtol=1e-15):
         assert isinstance(r, numbers.Real)
-        return np.fromiter(self._solve_theta(r, xtol), float)
+        θ = list(self._solve_theta(r, xtol))
+        return np.hstack([θ, np.subtract(π, θ[::-1])])
 
     def _solve_theta(self, r, xtol=1e-15):
-        for loop in range(self.l):
+        for loop in range(self.l // 2):
             yield from self._solve_theta_loop(r, loop, xtol=xtol)
+
+        if self.odd:
+            yield from self._solve_theta_loop(r, loop + 1, 0, xtol=xtol)
 
     def solve_theta_loop(self, r, loop, i=..., xtol=1e-15):
 
         assert isinstance(loop, numbers.Integral)
         #
-        w, loop = divmod(loop, self.l)
-        #loop = self._resolve_loop_int(loop)
+        loop, offset, sign = self._get_index_offset_sign(loop)
 
         unpack = next if isinstance(i, numbers.Integral) else tuple
-        return unpack(w * π + θ for θ in self._solve_theta_loop(r, loop, i, xtol))
+        return unpack(offset + sign * θ[::sign]
+                      for θ in self._solve_theta_loop(r, loop, i, xtol))
 
     def _solve_theta_loop(self, r, loop, i=...,  xtol=1e-15):
 
