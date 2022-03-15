@@ -657,11 +657,11 @@ class MultipoleFieldLines(DegreeProperty):
         return self.r(self.θmax)
 
     # ------------------------------------------------------------------------ #
-    def get_loop_index(self, theta, wrap=False):
-        wind, remain = divmod(theta, π_2)
+    def get_loop_index(self, theta, reflect=False):
+        wind, remain = np.divmod(theta, π_2)
         i = np.digitize(remain, self.theta0) - 1
         loops, *_ = self._get_index_offset_sign(i)
-        if wrap:
+        if reflect:
             return loops
         return (loops + wind * (self.l // 2)).astype(int)
 
@@ -701,7 +701,7 @@ class MultipoleFieldLines(DegreeProperty):
 
         # higher zeros are reflections of lower zeros around θ = π. Wrap
         # determines whether higher zeros, or their lower order reflection are
-        # returned (wrap=True))
+        # returned (reflect=True))
         if (b := (loops >= l2)).any():
             # print('fold')# print(f'{i=:}')
             loops[b] = (l2 - loops[b] - 1 - self.even) % (l2 + 1)
@@ -734,12 +734,8 @@ class MultipoleFieldLines(DegreeProperty):
         return self.theta_intervals[loops], offsets, signs
 
     # def get_loop_index(self, θ):
-    #     """Get index and wind number"""
-    #     w, θ = np.divmod(np.array(θ), π)
-    #     index = np.digitize(θ, self.zeros_0_π) - 1
-    #     return index, w.astype(int)
 
-    # def wrap_loop_index(self, loop):
+    # def reflect_loop_index(self, loop):
     #     # loop = self._resolve_loop_int(loop)
     #     loop = int(loop)
     #     l2 = (self.l // 2)
@@ -747,8 +743,12 @@ class MultipoleFieldLines(DegreeProperty):
     #         return (δ - 1 - self.even) % (l2 + 1)
     #     return loop
 
-    def _resolve_loop_int(self, loop):
+    def _resolve_loop_int(self, loop, reflect=False):
         loop = int(loop)
+        if reflect:
+            loop, *_ = self._get_index_offset_sign(loop)
+            return loop
+
         l = self.l
         if loop >= l:
             self._raise_invalid_loop_int(loop)
@@ -780,40 +780,40 @@ class MultipoleFieldLines(DegreeProperty):
         raise ValueError(f'Invalid loop index: {loop}. Should be an integer '
                          f'i < {self.l}.')
 
-    def get_zeros(self, loop=..., wrap=False):
-        # higher zeros are reflections of lower zeros around θ = π. Fold
+    def get_zeros(self, loop=..., reflect=False):
+        # higher zeros are reflections of lower zeros around θ = π. *reflect*
         # determines whether higher zeros, or their lower reflection are
-        # returned (wrap=True))
+        # returned (reflect=True))
 
         # multi loop
         if isinstance(loop, slice):
             return self.zeros_0_π[loop]
 
-        w, loop = np.divmod(loop, self.l)
-        if wrap:
+        w, loop = divmod(loop, self.l)
+        if reflect:
             w = 0
 
         # single loop
-        l2 = (self.l // 2)
+        l2 = self.l // 2
         if self.odd and (loop == l2):
             return np.array([(θ := self.theta0[-1]), π - θ]) + w * π
 
         # higher zeros are reflections of lower zeros around θ = π. Wrap
         # determines whether higher zeros, or their lower order reflection are
-        # returned (wrap=True))
+        # returned (reflect=True))
         if (b := (loop >= l2)):
             # print('fold')# print(f'{i=:}')
             loop = (l2 - loop - 1 - self.even) % (l2 + 1)
-            b = not wrap
+            b = not reflect
 
         d = (1, -1)[int(b)]
         return (w + b) * π + d * self.theta0[loop:(loop+2 or None)][::d]
 
-    def get_theta_interval(self, loop, wrap=False):
+    def get_theta_interval(self, loop, reflect=False):
         assert isinstance(loop, numbers.Integral)
 
         interval, offset, sign = self._get_interval_offset_sign(loop)
-        if wrap:
+        if reflect:
             return interval
         return sign * interval[::sign] + offset
 
@@ -950,7 +950,7 @@ class MultipoleFieldLines(DegreeProperty):
     def solve_theta_arc_length(self, s, start):
         # loop, _ = self.get_loop_index(start)
         # stop = self.zeros_0_π[loop, 1]
-        stop = self.theta_interval[self.get_loop_index(start, wrap=True), 1]
+        stop = self.theta_interval[self.get_loop_index(start, reflect=True), 1]
         return brentq(self._objective_theta_arc_length, start, stop, (start, s))
 
     def _arc_length_single_loop(self, loop, a, b):
@@ -1031,7 +1031,7 @@ class MultipoleFieldLines(DegreeProperty):
             return
 
         l = self.l
-        θ0, θ1 = self.get_zeros(loop, wrap=True)
+        θ0, θ1 = self.get_zeros(loop)
         for interval in [(θ0, θmax), (θmax, θ1)][i]:
             if r ** l < xtol:
                 warnings.warn(f'Attempting to solve for r(θ) = {r} in interval'
@@ -1085,14 +1085,14 @@ class MultipoleFieldLines(DegreeProperty):
             self._check_theta_in_loop(loop, interval)
 
             interval = sign * (interval[::sign] - offset)
-            logger.debug('Folded interval {}', interval)
+            logger.debug('Reflected interval {}', interval)
 
         # loop = _loop
         if self.odd and (_loop == self.l // 2):
             # optimization: reflect array around π since solutions are the same
             start, stop = interval
             if stop > π_2:
-                logger.debug('Folding around π/2: {} -> {}', interval, (start, π_2))
+                logger.debug('Reflecting around π/2: {} -> {}', interval, (start, π_2))
                 θ, r = self._get_theta_r_loop(_loop, (start, π_2), res)
 
                 i = np.digitize(π - stop, θ) - 1
