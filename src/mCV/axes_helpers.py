@@ -97,8 +97,7 @@ class AxesHelper:
         return ax
 
     def _on_first_draw(self, _event):
-
-        # disconnect so this only runs once
+        # disconnect here so this method only runs once
         self.axes.figure.canvas.mpl_disconnect(self._cid)
 
     def _label_axes(self, ax, units=(), default_unit='', **kws):
@@ -156,7 +155,7 @@ class SpatialAxes3D(Axes3DHelper):
 class OriginLabelledAxes(Origin, SpatialAxes3D):
     """
     A mixin that fascilitates locating an object in axes using the `origin`
-    attribute.
+    attribute.  Axes are labelled from physical units of `origin` attribute.
     """
 
     def _label_axes(self, ax, units=(), **kws):

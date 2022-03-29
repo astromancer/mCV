@@ -12,17 +12,16 @@ class Origin:
     """
     Origin property for locating objects in space.
     """
-    
+
     _origin = None  # placeholder
-    
+
     def __init__(self, origin):
         self.origin = origin
 
     @property
     def origin(self):
         """
-        Location of field centre - origin of the magnetic moment in Cartesain
-        coordinates.
+        Location of object (or field) centre in Cartesain coordinates.
         """
         return self._origin
 
@@ -40,8 +39,3 @@ class Origin:
         if (u := getattr(self.origin, 'unit', None)):
             xyz = default_units(xyz=u).apply(xyz)
         return xyz
-
-    
-
-
-    

@@ -16,6 +16,11 @@ def get_value(x):
     return getattr(x, 'value', x)
 
 
+def has_unit(val):
+    """Check if object has a physically meaningful unit."""
+    return not no_unit(val)
+
+
 def no_unit(val):
     return getattr(val, 'unit', None) in (None, u.dimensionless_unscaled)
 
@@ -54,7 +59,7 @@ class default_units(Decorator):
             return (next, tuple)[len(args) > 1](new_args)
 
         # keyword params
-        return {name: (val * unit
+        return {name: (val * unit  # NOTE: >> does not copy underlying data
                        if no_unit(val) and
                        ((unit := self.default_units.get(name)) is not None)
                        else
@@ -62,24 +67,14 @@ class default_units(Decorator):
                 for name, val in kws.items()}
 
     def __wrapper__(self, func, *args, **kws):
-
         ba = self.sig.bind(*args, **kws).arguments
-        _self = ba.pop('self', NULL)
-        return func(*(() if _self is NULL else (_self,)),
-                    **self.apply(**ba))
-
-        # return func(**{
-        #     name: (val
-        #            if (isinstance(val, u.Quantity) or
-        #                (unit := self.default_units.get(name)) is None)
-        #            else
-        #            val * unit)
-        #     for name, val in self.sig.bind(*args, **kws).arguments.items()
-        # })
-        # std
+        return func(
+            *(() if (_self := ba.pop('self', NULL)) is NULL else (_self,)),
+            **self.apply(**ba)
+        )
 
 
-def _check_units(namespace, allowed_physical_types):
+def _check_optional_units(namespace, allowed_physical_types):
     for name, kinds in allowed_physical_types.items():
         if name not in namespace:
             continue
@@ -92,3 +87,5 @@ def _check_units(namespace, allowed_physical_types):
             raise u.UnitTypeError(f'Parameter {name} should have physical '
                                   f'type(s) {kinds}, not '
                                   f'{obj.unit.physical_type}.')
+        # else:
+        #     logger.info
