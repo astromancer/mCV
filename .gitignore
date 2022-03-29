@@ -2,7 +2,7 @@
 ###################################
 dev
 animation
-
+tests/data/images/*
 
 #########################################
 # Editor temporary/working/backup files #
@@ -87,5 +87,3 @@ lib/z.lib
 # Jupyter files #
 #################
 .ipynb_checkpoints/
-
-
