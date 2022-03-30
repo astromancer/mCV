@@ -46,10 +46,11 @@ from recipes.transforms import cart2pol, cart2sph, pol2cart, sph2cart
 
 # relative
 from .roche import ARTIST_PROPS_3D, Ro
-from .axes_helpers import OriginLabelledAxes, SpatialAxes3D, get_axis_label
 from .utils import _check_optional_units, default_units, get_value, has_unit
 from .plotting_helpers import (pi_radian_formatter, theta_tickmarks,
                                x10_formatter)
+from .axes_helpers import (Axes3DHelper, OriginLabelledAxes, SpatialAxes3D,
+                           get_axis_label)
 
 
 # ---------------------------------------------------------------------------- #
@@ -68,17 +69,16 @@ ORIGIN_DEFAULT = (0, 0, 0) * Ro
 
 MULTIPOLE_NAMES = {
     # 0: monopole
-    1: 'dipole',
-    2: 'quadrupole',
-    3: 'sextupole',
-    4: 'octupole',
-    5: 'decapole',
-    6: 'dodecapole',
-    7: 'quadecapole',
-    8: 'sedecapole',
-    9: 'octadecapole',
+    1:  'dipole',
+    2:  'quadrupole',
+    3:  'sextupole',
+    4:  'octupole',
+    5:  'decapole',
+    6:  'dodecapole',
+    7:  'quadecapole',
+    8:  'sedecapole',
+    9:  'octadecapole',
     10: 'icosapole'
-
 }
 MULTIPOLE_DEGREES = {
     **invert(MULTIPOLE_NAMES),
@@ -86,7 +86,6 @@ MULTIPOLE_DEGREES = {
     'hexapole':     3,
     'sexadecapole': 8
 }
-
 # 'dotriacontapole':      16,
 # 'triacontadipole':      16,
 # 'tetrahexacontapole':   32,
@@ -100,7 +99,6 @@ CONFIG = AttrDict(
     n_loops_azimuth=4,
     rshells=1,
     cmap='jet',
-
 )
 
 
@@ -602,7 +600,7 @@ class DegreeProperty:
 #     def __call__(self):
 
 
-class MultipoleFieldLines(DegreeProperty):
+class MultipoleFieldLines(DegreeProperty, Axes3DHelper):
     # ------------------------------------------------------------------------ #
     def __init__(self, l=1):
         self.degree = l
@@ -683,12 +681,7 @@ class MultipoleFieldLines(DegreeProperty):
         return self.r(self.θmax)
 
     # ------------------------------------------------------------------------ #
-    # def _get_loop_index(self, theta):
-    #     wind, remain = np.divmod(theta, π_2)
-    #     index = np.digitize(remain, self.theta0) - 1
-
-    #     return
-
+    
     def _get_loop_index(self, theta, reflect=False):
         wind, remain = np.divmod(theta, π)
         # bins = self.theta0

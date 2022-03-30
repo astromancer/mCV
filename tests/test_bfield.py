@@ -9,27 +9,83 @@ from scipy.special import lpmv
 
 # local
 from recipes.testing import expected
-from mCV.bfield import (IdealMultipole, MagneticDipole, MultipoleFieldLines,
-                        PhysicalMultipole, PhysicalMultipoleFieldLines,
-                        _alf1_zeros)
+from mCV.bfield import (IdealMultipole, MultipoleFieldLines, PhysicalMultipole,
+                        PhysicalMultipoleFieldLines, _alf1_zeros, π)
 
 
-π = np.pi
+# ---------------------------------------------------------------------------- #
+# Module variables
+# ---------------------------------------------------------------------------- #
+_SHELLS = np.arange(1, 5)
+_INIT_PARAMS = {
+    PhysicalMultipoleFieldLines: {'radius': 0.25},
+    PhysicalMultipole: {'radius': 0.25},
+}
+
+# ---------------------------------------------------------------------------- #
+# Fixtures
+# ---------------------------------------------------------------------------- #
 
 
-def test_dipole():
-    return MagneticDipole(theta=30, phi=30).plot3d(rmin=0.1, alpha=1)
+@pytest.fixture(scope='module',
+                params=[MultipoleFieldLines,
+                        PhysicalMultipoleFieldLines])
+def fieldline_class(request):
+    return request.param
 
 
-def test_ideal_multipole(degree):
-    IdealMultipole(0, degree)
+@pytest.fixture(scope='module',
+                params=[IdealMultipole,
+                        PhysicalMultipole])
+def multipole_class(request):
+    return request.param
 
 
-class TestMultipoleFieldLine:
-    def test_get_zeros(self):
-        l = 5
-        MultipoleFieldLines(l)
+@pytest.fixture(scope='module',
+                params=range(1, 8))
+def degree(request):
+    return request.param
 
+
+def _init(kls, degree):
+    return kls(degree, **_INIT_PARAMS.get(kls, {}))
+
+
+@pytest.fixture(scope='module')
+def fieldlines(fieldline_class, degree):
+    return _init(fieldline_class, degree)
+
+
+@pytest.fixture(scope='module')
+def multipole(multipole_class, degree):
+    return _init(multipole_class, degree)
+
+
+@pytest.fixture(scope='module',
+                params=[MultipoleFieldLines,
+                        PhysicalMultipoleFieldLines,
+                        IdealMultipole,
+                        PhysicalMultipole])
+def plotable(request, degree):
+    return _init(request.param, degree)
+
+
+# ---------------------------------------------------------------------------- #
+# def test_dipole():
+#     return MagneticDipole(theta=30, phi=30).plot3d(rmin=0.1, alpha=1)
+
+
+# def test_ideal_multipole(degree):
+#     IdealMultipole(0, degree)
+
+
+# class TestMultipoleFieldLine:
+#     def test_get_zeros(self):
+#         l = 5
+#         MultipoleFieldLines(l)
+
+
+# class TestMultipoleFieldLines:
 
 # plt.show()
 def test_alf1_zeros():
@@ -68,13 +124,10 @@ def test_legendre_zero_angles():
     fig
 
 
-# class TestMultipoleFieldLines:
-
-_SHELLS = np.arange(1, 5)
-_INIT_PARAMS = {
-    PhysicalMultipoleFieldLines: {'radius': 0.25},
-    PhysicalMultipole: {'radius': 0.25},
-}
+def test_get_loop_index(fieldlines):
+    for m, i in itertools.product(range(2), range(fieldlines.degree)):
+        point = m * π + fieldlines.theta_intervals[i].mean()
+        assert fieldlines.get_loop_index(point) == m * fieldlines.degree + i
 
 
 # test_split_interval_ideal =
@@ -913,36 +966,17 @@ def test_split_interval(degree, interval, kls, expected):
     assert np.allclose(intervals, expected)
 
 
-@pytest.mark.parametrize('degree', range(1, 8))
-@pytest.mark.parametrize('kls', [MultipoleFieldLines,
-                                 PhysicalMultipoleFieldLines])
-def test_get_loop_index(degree, kls):
-    b = kls(degree, **_INIT_PARAMS.get(kls, {}))
-    for m, i in itertools.product(range(2), range(degree)):
-        point = m * π + b.theta_intervals[i].mean()
-        assert b.get_loop_index(point) == m * b.l + i
-
-
-@pytest.mark.parametrize('degree', range(1, 8))
-@pytest.mark.parametrize('kls', [MultipoleFieldLines,
-                                 PhysicalMultipoleFieldLines,
-                                 IdealMultipole,
-                                 PhysicalMultipole])
+@pytest.mark.parametrize('d', [2, 3], ids='{}d'.format)
 @pytest.mark.mpl_image_compare(baseline_dir='data/images',
                                remove_text=True,
-                               hash_library='data/test_image_hashes.json')
-def test_plot2d(kls, degree):
-
-    art = kls(degree, **_INIT_PARAMS.get(kls, {})).plot2d(rshells=_SHELLS)
+                               )
+def test_plot(plotable, d):
+    method = getattr(plotable, f'plot{d}d')
+    kws = {2: {'rshells': _SHELLS},
+           3: {'nshells': 2}}[d]
+    art = method(**kws)
 
     if isinstance(art, tuple):
         art = art[0]
 
     return art.axes.figure
-
-# @pytest.mark.parametrize('degree', range(1, 8))
-# @pytest.mark.mpl_image_compare(baseline_dir='data/images')
-# def test_plot2d(self, degree):
-
-#     rshells = np.arange(1, 5)
-#     line = MultipoleFieldLines(degree).plot2d(rshells=rshells)
